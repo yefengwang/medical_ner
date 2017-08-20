@@ -1,6 +1,7 @@
 import sys
 import os
 import codecs
+import re
 
 from xml.dom import minidom
 from optparse import OptionParser
@@ -80,6 +81,7 @@ def read_annotation(filename):
             mention = mentions[mention_id]
             ann_type = mention[1]
             ann_text = mention[2]
+            ann_type = re.sub(r'[A-Za-z]+', '', ann_type)
             annotations[mention_id] = (start, end, ann_type, ann_text, {})
 
     for mention_id, mention in class_mentions.items():
@@ -116,6 +118,8 @@ def read_project(project_dirname, verbose=True):
         corpus_filename = os.path.join(corpus_dirname, filename)
         ann_filename = os.path.join(ann_dirname, filename) + KNOWATOR_FILE_EXTENSION
         text = codecs.open(corpus_filename, encoding="utf-8").read()
+        if not os.path.exists(ann_filename):
+            continue
         annotations, relations = read_annotation(ann_filename)
         annotation_set = AnnotationSet()
         for mention_id, (start, end, ann_type, ann_text, assertions) in annotations.items():

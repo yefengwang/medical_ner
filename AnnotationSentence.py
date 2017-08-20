@@ -1,21 +1,5 @@
 from Tokeniser import tokeniser
 
-try:
-    unicode = unicode
-except NameError:
-    # 'unicode' is undefined, must be Python 3
-    str = str
-    unicode = str
-    bytes = bytes
-    basestring = (str, bytes)
-else:
-    # 'unicode' exists, must be Python 2
-    str = str
-    unicode = unicode
-    bytes = str
-    basestring = basestring
-
-
 def _tokenise_segment(segment):
     (start, end), text, tag_type = segment
 
@@ -41,7 +25,7 @@ def _tokenise_segment(segment):
 class AnnotationSentence:
 
     def __init__(self, doc_name, sent_num, start, end, annotations, text):
-        if type(text) == unicode or type(text) == str:
+        if type(text) == str:
             self.annotations = annotations
             self.num = sent_num
             self.annotations = annotations

@@ -39,9 +39,28 @@ def seq2bio(bio_sequences, filename, delimiter):
 
 
 def ehost2bio_split(project_name, dirname, ratio, shuffle=False,
-                    delimiter='\t', train_file="train.bio", test_file="test.bio"):
+                    delimiter=' ', train_file="train.txt", test_file="test.txt"):
     sequences = ehost2seq(project_name, shuffle)
     seq2bio_split(sequences, dirname, ratio, delimiter, train_file, test_file)
+
+
+def ehost2bio_create(project_name, dirname, train_ratio, valid_ratio, shuffle=False, delimiter=' ',
+                     train_file="train.txt", valid_file="valid.txt", test_file="test.txt"):
+    sequences = ehost2seq(project_name, shuffle)
+    total = len(sequences)
+    num_train = int(train_ratio * total)
+    num_valid = int(valid_ratio * total)
+    num_test = int(total - num_train - num_valid)
+    print("{}, {}, {}".format(num_train, num_valid, num_test))
+    train_sequences = sequences[:num_train]
+    valid_sequences = sequences[num_train:num_train+num_valid]
+    test_sequences = sequences[num_train+num_valid:]
+    train_file = os.path.join(dirname, train_file)
+    valid_file = os.path.join(dirname, valid_file)
+    test_file = os.path.join(dirname, test_file)
+    seq2bio(train_sequences, train_file, delimiter)
+    seq2bio(valid_sequences, valid_file, delimiter)
+    seq2bio(test_sequences, test_file, delimiter)
 
 
 def seq2bio_split(sequences, dirname, ratio, delimiter, train_file, test_file):
@@ -69,19 +88,23 @@ def main():
     parser.add_option('-d', '--delimiter', dest='delimiter', help="delimiter to join "
                                                                   "the columns in BIO file, S=space, T=tab.")
 
+    parser.add_option('-c', '--create', action='store_true', dest='create',
+                      help="create a training, validation and test set.")
     (options, args) = parser.parse_args()
 
-    single_mode = True
+    mode = 'normal'
     train_ratio = 1.0
     if options.ratio is not None:
         try:
             train_ratio = float(options.ratio)
-            single_mode = False
+            mode = "split"
         except ValueError:
-            single_mode = True
+            mode = "normal"
+    if options.create:
+        mode = 'create'
 
     if options.delimiter is None:
-        options.delimiter = '\t'
+        options.delimiter = ' '
     elif options.delimiter == 'S':
         options.delimiter = ' '
     elif options.delimiter == 'T':
@@ -92,11 +115,15 @@ def main():
 
     project_name, output_filename = args[:2]
 
-    if single_mode:
+    if mode == 'normal':
         ehost2bio(project_name, output_filename, options.shuffle, options.delimiter)
-    else:
+    elif mode == 'split':
         ehost2bio_split(project_name, output_filename, train_ratio, options.shuffle, options.delimiter)
-
+    elif mode == 'create':
+        train_ratio = 0.7
+        valid_ratio = 0.15
+        ehost2bio_create(project_name, output_filename, train_ratio, valid_ratio,
+                         shuffle=options.shuffle, delimiter=options.delimiter)
 
 if __name__ == "__main__":
     main()

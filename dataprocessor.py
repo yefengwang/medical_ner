@@ -1,5 +1,6 @@
 from dataloader import BIOFileLoader
 
+
 def _pad_sequences(sequences, pad_tok, max_length):
     sequence_padded, sequence_length = [], []
 
@@ -45,5 +46,7 @@ def pad_sequences(sequences, pad_tok, nlevels=1):
 
 def main():
     dataset = BIOFileLoader("data/conll2003/en/train.txt")
-    for sentences, tags in dataset:
-        print(sentences, tags)
+    print(pad_sequences(dataset, "<<PAD>>"))
+
+if __name__ == "__main__":
+    main()

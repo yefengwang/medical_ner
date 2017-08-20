@@ -13,24 +13,52 @@ import sys
 
 from optparse import OptionParser
 
+"""
+Epoch 35 out of 35
+..............................
+- dev acc 84.54 - f1 64.99
+- new best score!
+Testing model over test set
+- test acc 87.94 - f1 74.78
+
 # Hyper parameters
-word_embedding_size = 100 # word embedding size
-char_embedding_size = 100 # char embedding size
-filter_sizes = [2, 3, 4] # CNN filter sizes, use window 3, 4, 5 for char CNN
-num_filters = 100 # CNN output
+word_embedding_size = 500 # word embedding size
+char_embedding_size = 300 # char embedding size
+filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+num_filters = 200 # CNN output
 hidden_size = 300 # LSTM hidden size
 
-converge_check = 2
+converge_check = 20
 use_chars = True
 use_crf = True
-clip = -1
-batch_size = 50
-num_epochs = 15
+clip = 5
+batch_size = 20
+num_epochs = 35
 dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
-output_path = "results/"
-model_output = output_path + "model.weights/"
+"""
+
+
+
+# Hyper parameters
+word_embedding_size = 500 # word embedding size
+char_embedding_size = 300 # char embedding size
+filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+num_filters = 200 # CNN output
+hidden_size = 300 # LSTM hidden size
+
+converge_check = 20
+use_chars = True
+use_crf = True
+clip = 5
+batch_size = 20
+num_epochs = 35
+dropout = 0.5
+learning_rate = 0.001
+learning_rate_decay = 0.9
+
+reload_model = False
 
 UNK = "<<UNK>>"
 NUM = "<<NUM>>"
@@ -50,7 +78,7 @@ def get_vocabs(datasets):
 class BIOFileLoader(object):
     def __init__(self, filename, word_vocab=None, char_vocab=None, tag_vocab=None):
         self.filename = filename
-        self.max_seq = max_seq
+        #self.max_seq = max_seq
         self._length = None
         self._max_length = None
         self._max_word_length = None
@@ -64,6 +92,7 @@ class BIOFileLoader(object):
             length += 1
             max_length = max(len(xws), max_length)
             max_word_length = max(max_word_length, max(map(len, xcs)))
+            print(max_length, max_word_length)
         self._max_length = max_length
         self._max_word_length = max_word_length
         self._length = length
@@ -206,13 +235,15 @@ class Vocab:
 
 class Model(object):
 
-    def __init__(self, num_words, num_tags, num_chars, max_sentence_len, max_word_len, learning_rate, word_embeddings=None):
+    def __init__(self, num_words, num_tags, num_chars, max_sentence_len, 
+                 max_word_len, learning_rate, model_dir, word_embeddings=None):
         self.num_words = num_words
         self.num_chars = num_chars
         self.num_tags = num_tags
         self.max_word_len = max_word_len
         self.max_sentence_len = max_sentence_len
         self.learning_rate = learning_rate
+        self.model_dir = model_dir
 
 
         # shape = (batch size, max length of sentence in batch)
@@ -258,8 +289,6 @@ class Model(object):
                 #                           summarize=10)
                 word_lengths = tf.reshape(self.word_lengths, shape=[-1])
                 #word_lengths = tf.Print(word_lengths, [word_lengths], "word_lengths=", summarize=10)
-                # bi lstm on chars
-                # need 2 instances of cells since tf 1.1
                 """
                 # word level LSTM
                 cell_fw = tf.contrib.rnn.LSTMCell(self.config.char_hidden_size, 
@@ -304,12 +333,12 @@ class Model(object):
                             name="pool")
                         pooled_outputs.append(pooled)
 
-            # Combine all the pooled features
-            num_filters_total = num_filters * len(filter_sizes)
-            h_pool = tf.concat(pooled_outputs, 3)
-            h_pool_flat = tf.reshape(h_pool, [-1, s[1], num_filters_total])
-            #h_pool_flat = tf.Print(h_pool_flat, [tf.shape(h_pool_flat)], "pool=", summarize=10)
-            word_embeddings = tf.concat([word_embeddings, h_pool_flat], axis=-1)
+                # Combine all the pooled features
+                num_filters_total = num_filters * len(filter_sizes)
+                h_pool = tf.concat(pooled_outputs, 3)
+                h_pool_flat = tf.reshape(h_pool, [-1, s[1], num_filters_total])
+                #h_pool_flat = tf.Print(h_pool_flat, [tf.shape(h_pool_flat)], "pool=", summarize=10)
+                word_embeddings = tf.concat([word_embeddings, h_pool_flat], axis=-1)
 
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
@@ -374,29 +403,38 @@ class Model(object):
         # for early stopping
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
-            #if reload:
-            #    print("Reloading the latest trained model...")
-            #    saver.restore(sess, self.model_output)
+            if reload_model:
+                print("Reloading the latest trained model...")
+                saver.restore(sess, self.model_dir)
             for epoch in range(num_epochs):
                 print("Epoch {:} out of {:}".format(epoch + 1, num_epochs))
 
-                acc, f1 = self.run_epoch(sess, train, dev, tags, epoch)
+                # num_instance = len(train)
+                train_loss = 0.0
+                for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
+                    fd, _ = self.get_feed_dict(words, labels, learning_rate, dropout)
+                    sys.stdout.write(".")
+                    sys.stdout.flush()
+                    _, train_loss = sess.run([self.train_op, self.loss], feed_dict=fd)
+                print()
+                acc, f1 = self.evaluate(sess, dev, tags)
+                print("# loss {:04.8f} acc {:04.2f} f1 {:04.2f}".format(train_loss, 100*acc, 100*f1))
 
                 # decay learning rate
                 self.learning_rate  *= learning_rate_decay
                 # early stopping and saving best parameters
                 if f1 >= best_score:
                     nepoch_no_imprv = 0
-                    if not os.path.exists(model_output):
-                        os.makedirs(model_output)
-                    saver.save(sess, model_output)
+                    if not os.path.exists(self.model_dir):
+                        os.makedirs(self.model_dir)
+                    saver.save(sess, os.path.join(self.model_dir, "model"))
                     best_score = f1
-                    print("- new best score!")
+                    print("# best model")
 
                 else:
                     nepoch_no_imprv += 1
-                    if nepoch_no_imprv >= nepoch_no_imprv:
-                        print("- early stopping {} epochs without improvement".format(
+                    if nepoch_no_imprv >= converge_check:
+                        print("# stopped after {} epochs without improvement".format(
                             nepoch_no_imprv))
                         break
 
@@ -420,29 +458,15 @@ class Model(object):
 
             return labels_pred, sequence_lengths
 
-    def evaluate(self, test, tags):
+    def test(self, test, tags):
         saver = tf.train.Saver()
         with tf.Session() as sess:
             print("Testing model over test set")
-            saver.restore(sess, model_output)
-            acc, f1 = self.run_evaluate(sess, test, tags)
-            print("- test acc {:04.2f} - f1 {:04.2f}".format(100 * acc, 100 * f1))
+            saver.restore(sess, os.path.join(self.model_dir, "model"))
+            acc, f1 = self.evaluate(sess, test, tags)
+            print("# test acc {:04.2f} - f1 {:04.2f}".format(100 * acc, 100 * f1))
 
-    def run_epoch(self, sess, train, dev, tags, epoch):
-        num_instance = len(train)
-        num_batches = num_instance // batch_size
-
-        for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
-            fd, _ = self.get_feed_dict(words, labels, learning_rate, dropout)
-            sys.stdout.write(".")
-            sys.stdout.flush()
-            _, train_loss = sess.run([self.train_op, self.loss], feed_dict=fd)
-        print()
-        acc, f1 = self.run_evaluate(sess, dev, tags)
-        print("- dev acc {:04.2f} - f1 {:04.2f}".format(100*acc, 100*f1))
-        return acc, f1
-
-    def run_evaluate(self, sess, test, tags):
+    def evaluate(self, sess, test, tags):
         accs = []
         correct_preds, total_correct, total_preds = 0., 0., 0.
         for words, labels in mini_batch(test, batch_size):
@@ -604,29 +628,31 @@ def get_input_filenames(input_dir):
     return train_filename, valid_filename, test_filename
 
 def main():
-    parser = OptionParser(usage="usage: %prog [option] data_dir working_dir\n"
+    parser = OptionParser(usage="usage: %prog [option] data_dir\n"
                                 "\n"
-                                "build a cnn + lstm + crf named entity recogniser."
+                                "build a cnn+lstm+crf named entity recogniser."
                                 "",
                           version="%prog 1.0")
     parser.add_option('-b', '--build', action='store_true', dest='build', help='build the vocabulary')
 
     (options, args) = parser.parse_args()
 
-    if len(args) < 2:
+    if len(args) < 1:
         parser.error("Invalid number of argument.")
 
-    input_dir, working_dir = args[:2]
+    input_dir = args[0]
 
     if options.build:
-        build(input_dir, working_dir)
+        build(input_dir)
     else:
-        run(input_dir, working_dir)
+        run(input_dir)
 
-def run(input_dir, working_dir):
+def run(input_dir):
 
+    model_dir = os.path.join(input_dir, "model")
+    
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
-    word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
+    word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(input_dir)
 
     char_vocab = Vocab(char_vocab_filename, encode_char=True)
     word_vocab = Vocab(word_vocab_filename)
@@ -641,18 +667,23 @@ def run(input_dir, working_dir):
     num_labels = len(tag_vocab)
 
     max_sentence_len = train.max_length()
+
     max_word_len = min(train.max_word_length(), 20)
 
-    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, learning_rate)
+    print("max_sentence={}".format(max_sentence_len))
+    print("max_word={}".format(max_word_len))
+
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, learning_rate, model_dir)
 
     vocab_tags = tag_vocab.encoding_map
 
     model.train(train, dev, vocab_tags)
-    model.evaluate(test, vocab_tags)
+    model.test(test, vocab_tags)
 
-def build(input_dir, working_dir):
-
-    os.makedirs(working_dir, exist_ok=True)
+def build(input_dir):
+    
+    working_dir = input_dir 
+    # os.makedirs(working_dir, exist_ok=True)
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
     word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
 
