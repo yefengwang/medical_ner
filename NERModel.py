@@ -42,18 +42,19 @@ learning_rate_decay = 0.9
 
 
 # Hyper parameters
-word_embedding_size = 500 # word embedding size
-char_embedding_size = 300 # char embedding size
+word_embedding_size = 100 # word embedding size
+char_embedding_size = 50 # char embedding size
 filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
-num_filters = 200 # CNN output
-hidden_size = 300 # LSTM hidden size
+cnn_hidden_size = 120 # CNN output
+lstm_hidden_size = 70 # LSTM hidden size
 
+attention_size = 100
 converge_check = 20
 use_chars = True
 use_crf = True
 clip = 5
 batch_size = 20
-num_epochs = 35
+num_epochs = 15
 dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
@@ -92,7 +93,7 @@ class BIOFileLoader(object):
             length += 1
             max_length = max(len(xws), max_length)
             max_word_length = max(max_word_length, max(map(len, xcs)))
-            print(max_length, max_word_length)
+            #print(max_length, max_word_length)
         self._max_length = max_length
         self._max_word_length = max_word_length
         self._length = length
@@ -236,15 +237,14 @@ class Vocab:
 class Model(object):
 
     def __init__(self, num_words, num_tags, num_chars, max_sentence_len, 
-                 max_word_len, learning_rate, model_dir, word_embeddings=None):
+                 max_word_len, model_dir, word_embeddings=None, load_model=False):
         self.num_words = num_words
         self.num_chars = num_chars
         self.num_tags = num_tags
         self.max_word_len = max_word_len
         self.max_sentence_len = max_sentence_len
-        self.learning_rate = learning_rate
         self.model_dir = model_dir
-
+        self.learning_rate = learning_rate
 
         # shape = (batch size, max length of sentence in batch)
         self.words = tf.placeholder(tf.int32, shape=[None, None], name="words")
@@ -307,23 +307,23 @@ class Model(object):
                 output = tf.reshape(output, shape=[-1, s[1], 2*self.config.char_hidden_size])
                 """
 
-                pooled_outputs = []
+                char_cnn_outputs = []
                 # add channel
-                expanded_char_embeddings = tf.expand_dims(char_embeddings, -1)
+                char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
                 for i, filter_size in enumerate(filter_sizes):
                     with tf.name_scope("conv-maxpool-%s" % filter_size):
                         # Convolution Layer
-                        filter_shape = [filter_size, char_embedding_size, 1, num_filters]
-                        W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
-                        b = tf.Variable(tf.constant(0.1, shape=[num_filters]), name="b")
+                        filter_shape = [filter_size, char_embedding_size, 1, cnn_hidden_size]
+                        char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
+                        char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
                         conv = tf.nn.conv2d(
-                            expanded_char_embeddings,
-                            W,
+                            char_embeddings_with_channel,
+                            char_cnn_W,
                             strides=[1, 1, 1, 1],
                             padding="VALID",
                             name="conv")
                         # Apply nonlinearity
-                        h = tf.nn.relu(tf.nn.bias_add(conv, b), name="relu")
+                        h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
                         # Maxpooling over the outputs, only on height
                         pooled = tf.nn.max_pool(
                             h,
@@ -331,48 +331,122 @@ class Model(object):
                             strides=[1, 1, 1, 1],
                             padding='VALID',
                             name="pool")
-                        pooled_outputs.append(pooled)
+                        char_cnn_outputs.append(pooled)
 
                 # Combine all the pooled features
-                num_filters_total = num_filters * len(filter_sizes)
-                h_pool = tf.concat(pooled_outputs, 3)
-                h_pool_flat = tf.reshape(h_pool, [-1, s[1], num_filters_total])
-                #h_pool_flat = tf.Print(h_pool_flat, [tf.shape(h_pool_flat)], "pool=", summarize=10)
-                word_embeddings = tf.concat([word_embeddings, h_pool_flat], axis=-1)
+                cnn_hidden_total = cnn_hidden_size * len(filter_sizes)
+                cnn_hidden = tf.concat(char_cnn_outputs, 3)
+                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
+                #cnn_hidden_flat = tf.Print(cnn_hidden_flat, [tf.shape(cnn_hidden_flat)], "pool=", summarize=10)
+                # cnn_hidden_flat = [batch_size, max_sentence_len, num_kernels * num_filters]
+                
+                """
+                char_hidden_size = tf.shape(cnn_hidden_flat.shape)[-1]
+                # Char Attention Here
+                with tf.variable_scope("chars_attention"):
+                
+                    # Attention mechanism
+                    W_omega = tf.get_variable(initializer=tf.random_normal([char_hidden_size, attention_size], stddev=0.1),
+                                              name="attention_W", dtype=tf.float32)
+                    b_omega = tf.get_variable(initializer=tf.random_normal([attention_size], stddev=0.1),
+                                              name="attention_b", dtype=tf.float32)
+                    u_omega = tf.get_variable(initializer=tf.random_normal([attention_size], stddev=0.1),
+                                              name="attention_u", dtype=tf.float32)
+                    v = tf.tanh(tf.matmul(tf.reshape(cnn_hidden_flat, [-1, hidden_size]), W_omega) + tf.reshape(b_omega, [1, -1]))
+                    vu = tf.matmul(v, tf.reshape(u_omega, [-1, 1]))
+                    exps = tf.reshape(tf.exp(vu), [-1, sequence_length])
+                    alphas = exps / tf.reshape(tf.reduce_sum(exps, 1), [-1, 1])
+
+                    # Output of Bi-RNN is reduced with attention vector
+                    output = tf.reduce_sum(inputs * tf.reshape(alphas, [-1, sequence_length, 1]), 1)                    
+                """
+                word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
 
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
-            cell_fw = tf.contrib.rnn.LSTMCell(hidden_size)
-            cell_bw = tf.contrib.rnn.LSTMCell(hidden_size)
+            cell_fw = tf.contrib.rnn.LSTMCell(lstm_hidden_size)
+            cell_bw = tf.contrib.rnn.LSTMCell(lstm_hidden_size)
             (output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(cell_fw,
                                                                         cell_bw,
                                                                         self.word_embeddings,
                                                                         sequence_length=self.sentences_lengths,
                                                                         dtype=tf.float32)
             lstm_output = tf.concat([output_fw, output_bw], axis=-1)
+
+            #lstm_output = tf.Print(lstm_output, [tf.shape(lstm_output)], "lstm_output=", summarize=10)
+
             lstm_output = tf.nn.dropout(lstm_output, self.dropout)
 
-        self.logits = None
         with tf.variable_scope("fc"):
-            W = tf.get_variable("W",
-                                shape=[2 * hidden_size, self.num_tags],
+            softmax_W = tf.get_variable("softmax_w",
+                                shape=[2 * lstm_hidden_size, self.num_tags],
                                 dtype=tf.float32)
 
-            b = tf.get_variable("b",
+            softmax_b = tf.get_variable("softmax_b",
                                 shape=[self.num_tags],
                                 dtype=tf.float32,
                                 initializer=tf.zeros_initializer())
 
             num_time_steps = tf.shape(lstm_output)[1]
-            lstm_output = tf.reshape(lstm_output, [-1, 2 * hidden_size])
-            pred = tf.matmul(lstm_output, W) + b
-            self.logits = tf.reshape(pred, [-1, num_time_steps, self.num_tags])
+            lstm_output = tf.reshape(lstm_output, [-1, 2 * lstm_hidden_size])
+            lstm_output = tf.Print(lstm_output, [tf.shape(lstm_output)], "lstm_output=", summarize=10)
+            pred = tf.matmul(lstm_output, softmax_W) + softmax_b
+            pred = tf.Print(pred, [tf.shape(pred)], "pred=", summarize=10)
+
+            logits = tf.reshape(pred, [-1, num_time_steps, self.num_tags]) # B T O (20, 48, 24)
+            self.logits = tf.Print(logits, [tf.shape(logits)], "logits_output=", summarize=10)
+
+
+        with tf.variable_scope("crf") as vs:
+            # Add start and end tokens
+            small_score = -1000.0
+            large_score = 0.0
+            sequence_length = tf.shape(self.logits)[1]
+            unary_scores_with_start_and_end = tf.concat(
+                [self.logits, tf.tile(tf.constant(small_score, shape=[1, 2]), [sequence_length, 1])], 1)
+            start_unary_scores = [[small_score] * dataset.number_of_classes + [large_score, small_score]]
+            end_unary_scores = [[small_score] * dataset.number_of_classes + [small_score, large_score]]
+            self.unary_scores = tf.concat([start_unary_scores, unary_scores_with_start_and_end, end_unary_scores],
+                                          0)
+            start_index = dataset.number_of_classes
+            end_index = dataset.number_of_classes + 1
+            input_label_indices_flat_with_start_and_end = tf.concat(
+                [tf.constant(start_index, shape=[1]), self.input_label_indices_flat,
+                 tf.constant(end_index, shape=[1])], 0)
+
+            # Apply CRF layer
+            sequence_length = tf.shape(self.unary_scores)[0]
+            sequence_lengths = tf.expand_dims(sequence_length, axis=0, name='sequence_lengths')
+            unary_scores_expanded = tf.expand_dims(self.unary_scores, axis=0, name='unary_scores_expanded')
+            input_label_indices_flat_batch = tf.expand_dims(input_label_indices_flat_with_start_and_end, axis=0,
+                                                            name='input_label_indices_flat_batch')
+            if self.verbose: print('unary_scores_expanded: {0}'.format(unary_scores_expanded))
+            if self.verbose: print('input_label_indices_flat_batch: {0}'.format(input_label_indices_flat_batch))
+            if self.verbose: print("sequence_lengths: {0}".format(sequence_lengths))
+            # https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/crf
+            # Compute the log-likelihood of the gold sequences and keep the transition params for inference at test time.
+            self.transition_parameters = tf.get_variable(
+                "transitions",
+                shape=[dataset.number_of_classes + 2, dataset.number_of_classes + 2],
+                initializer=initializer)
+            utils_tf.variable_summaries(self.transition_parameters)
+            log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
+                unary_scores_expanded, input_label_indices_flat_batch, sequence_lengths,
+                transition_params=self.transition_parameters)
+            self.loss = tf.reduce_mean(-log_likelihood, name='cross_entropy_mean_loss')
+            self.accuracy = tf.constant(1)
+
+
+
 
         if not use_crf:
             self.labels_pred = tf.cast(tf.argmax(self.logits, axis=-1), tf.int32)
 
         if use_crf:
+
+
+
             #self.sentences_lengths = tf.Print(self.sentences_lengths, [self.sentences_lengths], "s=", summarize=10)
             log_likelihood, self.transition_params = tf.contrib.crf.crf_log_likelihood(
                 self.logits, self.tags, self.sentences_lengths)
@@ -397,31 +471,44 @@ class Model(object):
             else:
                 self.train_op = optimizer.minimize(self.loss)
 
+        if load_model:
+            self.sess = self.load_model()
+        else:
+            self.sess = None
+
+    def load_model(self):
+        saver = tf.train.Saver()
+        sess = tf.Session()
+        sess.run(tf.global_variables_initializer())
+        saver.restore(sess, os.path.join(self.model_dir, "model"))
+        return sess
+
     def train(self, train, dev, tags):
         best_score = 0
         saver = tf.train.Saver()
         # for early stopping
         with tf.Session() as sess:
+            nepoch_no_imprv = 0
             sess.run(tf.global_variables_initializer())
             if reload_model:
                 print("Reloading the latest trained model...")
-                saver.restore(sess, self.model_dir)
+                saver.restore(sess, os.path.join(self.model_dir, "model"))
             for epoch in range(num_epochs):
                 print("Epoch {:} out of {:}".format(epoch + 1, num_epochs))
 
                 # num_instance = len(train)
                 train_loss = 0.0
                 for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
-                    fd, _ = self.get_feed_dict(words, labels, learning_rate, dropout)
+                    fd, _ = self.get_feed_dict(words, labels, self.learning_rate, dropout)
                     sys.stdout.write(".")
                     sys.stdout.flush()
                     _, train_loss = sess.run([self.train_op, self.loss], feed_dict=fd)
-                print()
+                #print()
                 acc, f1 = self.evaluate(sess, dev, tags)
                 print("# loss {:04.8f} acc {:04.2f} f1 {:04.2f}".format(train_loss, 100*acc, 100*f1))
 
                 # decay learning rate
-                self.learning_rate  *= learning_rate_decay
+                self.learning_rate *= learning_rate_decay
                 # early stopping and saving best parameters
                 if f1 >= best_score:
                     nepoch_no_imprv = 0
@@ -441,7 +528,7 @@ class Model(object):
 
     def predict_batch(self, sess, words):
         feed_dict, sequence_lengths = self.get_feed_dict(words, dropout=1.0)
-
+        print("use_crf=", use_crf)
         if use_crf:
             viterbi_sequences = []
             logits, transition_params = sess.run([self.logits, self.transition_params], feed_dict=feed_dict)
@@ -450,6 +537,7 @@ class Model(object):
                 # keep only the valid time steps
                 logit = logit[:sequence_length]
                 viterbi_sequence, viterbi_score = tf.contrib.crf.viterbi_decode(logit, transition_params)
+                print("viterbi_seq=", viterbi_sequence, viterbi_score)
                 viterbi_sequences += [viterbi_sequence]
             return viterbi_sequences, sequence_lengths
 
@@ -457,6 +545,33 @@ class Model(object):
             labels_pred = sess.run(self.labels_pred, feed_dict=feed_dict)
 
             return labels_pred, sequence_lengths
+
+    def predict(self, input_seq, word_vocab, char_vocab, label_vocab):
+        words, chars = [], []
+        for word in input_seq:
+            char = list(word)
+            word = word_vocab.encode(word)
+            char = char_vocab.encode(char)
+            words.append(word)
+            chars.append(char)
+        words = [[words, chars]]
+
+        def pred(sess_, seq):
+            labels_pred, sequence_lengths = self.predict_batch(sess_, seq)
+            return [label_vocab.decode(label) for label in labels_pred[0]]
+
+        if self.sess is None:
+            with tf.Session() as sess_:
+                saver = tf.train.Saver()
+                saver.restore(sess_, os.path.join(self.model_dir, "model"))
+                return pred(sess_, words)
+        else:
+            return pred(self.sess, words)
+
+    def close(self):
+        if self.sess:
+            self.sess.close()
+            self.sess = None
 
     def test(self, test, tags):
         saver = tf.train.Saver()
@@ -496,9 +611,6 @@ class Model(object):
         chars, word_lengths = pad_chars(chars, pad_tok=0,
                                         max_word_length=self.max_word_len, max_sentence_length=self.max_sentence_len)
 
-        #print(chars)
-        #import sys
-        #sys.exit(0)
         feed = {
             self.words: words,
             self.sentences_lengths: sentences_lengths,
@@ -520,7 +632,7 @@ class Model(object):
 
 
 def get_chunk_type(tok, idx_to_tag):
-    tag_name = idx_to_tag[tok]
+    tag_name = idx_to_tag.get(tok, OUTSIDE)
     tag_class = tag_name.split('-')[0]
     tag_type = tag_name.split('-')[-1]
     return tag_class, tag_type
@@ -564,7 +676,7 @@ def mini_batch(data, batch_size):
         if len(x_batch) == batch_size:
             yield x_batch, y_batch
             x_batch, y_batch = [], []
-        x_batch += [map(list, x)]
+        x_batch += [[list(x_) for x_ in x]]
         y_batch += [y]
 
     if len(x_batch) != 0:
@@ -635,6 +747,7 @@ def main():
                           version="%prog 1.0")
     parser.add_option('-b', '--build', action='store_true', dest='build', help='build the vocabulary')
 
+    parser.add_option('-p', '--predict', action='store_true', dest='predict', help='make prediction')
     (options, args) = parser.parse_args()
 
     if len(args) < 1:
@@ -644,8 +757,35 @@ def main():
 
     if options.build:
         build(input_dir)
+    elif options.predict:
+        run_predict(input_dir)
     else:
         run(input_dir)
+
+
+def run_predict(input_dir):
+    model_dir = os.path.join(input_dir, "model")
+
+    word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(input_dir)
+
+    char_vocab = Vocab(char_vocab_filename, encode_char=True)
+    word_vocab = Vocab(word_vocab_filename)
+    label_vocab = Vocab(label_vocab_filename, encode_tag=True)
+
+    num_words = len(word_vocab)
+    num_chars = len(char_vocab)
+    num_labels = len(label_vocab)
+
+    # max_sentence_len = train.max_length()
+    max_sentence_len = 100
+
+    max_word_len = 20
+
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir)
+
+    input_seq = ["主", "诉", "：", "发现", "心脏", "杂音", "7", "月"]
+    print(model.predict(input_seq, word_vocab, char_vocab, label_vocab))
+
 
 def run(input_dir):
 
@@ -666,14 +806,15 @@ def run(input_dir):
     num_chars = len(char_vocab)
     num_labels = len(tag_vocab)
 
-    max_sentence_len = train.max_length()
+    #max_sentence_len = train.max_length()
+    max_sentence_len = 48
 
     max_word_len = min(train.max_word_length(), 20)
 
     print("max_sentence={}".format(max_sentence_len))
     print("max_word={}".format(max_word_len))
 
-    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, learning_rate, model_dir)
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir)
 
     vocab_tags = tag_vocab.encoding_map
 
