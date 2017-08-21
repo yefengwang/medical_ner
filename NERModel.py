@@ -12,6 +12,7 @@ import tensorflow as tf
 import sys
 
 from optparse import OptionParser
+import collections
 
 """
 Epoch 35 out of 35
@@ -42,19 +43,20 @@ learning_rate_decay = 0.9
 
 
 # Hyper parameters
-word_embedding_size = 100 # word embedding size
-char_embedding_size = 50 # char embedding size
-filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
-cnn_hidden_size = 120 # CNN output
-lstm_hidden_size = 70 # LSTM hidden size
 
-attention_size = 100
+# Hyper parameters
+word_embedding_size = 500 # word embedding size
+char_embedding_size = 300 # char embedding size
+filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+cnn_hidden_size = 200 # CNN output
+lstm_hidden_size = 300 # LSTM hidden size
+
 converge_check = 20
 use_chars = True
 use_crf = True
 clip = 5
 batch_size = 20
-num_epochs = 15
+num_epochs = 35
 dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
@@ -260,6 +262,11 @@ class Model(object):
         self.dropout = tf.placeholder(dtype=tf.float32, shape=[], name="dropout")
         self.lr = tf.placeholder(dtype=tf.float32, shape=[], name="lr")
 
+        self.transition_params = tf.get_variable(
+            "transitions",
+            shape=[self.num_tags, self.num_tags],
+            initializer=tf.zeros_initializer)
+
         self.train_op = None
         self.loss = None
 
@@ -390,66 +397,19 @@ class Model(object):
 
             num_time_steps = tf.shape(lstm_output)[1]
             lstm_output = tf.reshape(lstm_output, [-1, 2 * lstm_hidden_size])
-            lstm_output = tf.Print(lstm_output, [tf.shape(lstm_output)], "lstm_output=", summarize=10)
+            #lstm_output = tf.Print(lstm_output, [tf.shape(lstm_output)], "lstm_output=", summarize=10)
             pred = tf.matmul(lstm_output, softmax_W) + softmax_b
-            pred = tf.Print(pred, [tf.shape(pred)], "pred=", summarize=10)
-
-            logits = tf.reshape(pred, [-1, num_time_steps, self.num_tags]) # B T O (20, 48, 24)
-            self.logits = tf.Print(logits, [tf.shape(logits)], "logits_output=", summarize=10)
-
-
-        with tf.variable_scope("crf") as vs:
-            # Add start and end tokens
-            small_score = -1000.0
-            large_score = 0.0
-            sequence_length = tf.shape(self.logits)[1]
-            unary_scores_with_start_and_end = tf.concat(
-                [self.logits, tf.tile(tf.constant(small_score, shape=[1, 2]), [sequence_length, 1])], 1)
-            start_unary_scores = [[small_score] * dataset.number_of_classes + [large_score, small_score]]
-            end_unary_scores = [[small_score] * dataset.number_of_classes + [small_score, large_score]]
-            self.unary_scores = tf.concat([start_unary_scores, unary_scores_with_start_and_end, end_unary_scores],
-                                          0)
-            start_index = dataset.number_of_classes
-            end_index = dataset.number_of_classes + 1
-            input_label_indices_flat_with_start_and_end = tf.concat(
-                [tf.constant(start_index, shape=[1]), self.input_label_indices_flat,
-                 tf.constant(end_index, shape=[1])], 0)
-
-            # Apply CRF layer
-            sequence_length = tf.shape(self.unary_scores)[0]
-            sequence_lengths = tf.expand_dims(sequence_length, axis=0, name='sequence_lengths')
-            unary_scores_expanded = tf.expand_dims(self.unary_scores, axis=0, name='unary_scores_expanded')
-            input_label_indices_flat_batch = tf.expand_dims(input_label_indices_flat_with_start_and_end, axis=0,
-                                                            name='input_label_indices_flat_batch')
-            if self.verbose: print('unary_scores_expanded: {0}'.format(unary_scores_expanded))
-            if self.verbose: print('input_label_indices_flat_batch: {0}'.format(input_label_indices_flat_batch))
-            if self.verbose: print("sequence_lengths: {0}".format(sequence_lengths))
-            # https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/crf
-            # Compute the log-likelihood of the gold sequences and keep the transition params for inference at test time.
-            self.transition_parameters = tf.get_variable(
-                "transitions",
-                shape=[dataset.number_of_classes + 2, dataset.number_of_classes + 2],
-                initializer=initializer)
-            utils_tf.variable_summaries(self.transition_parameters)
-            log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
-                unary_scores_expanded, input_label_indices_flat_batch, sequence_lengths,
-                transition_params=self.transition_parameters)
-            self.loss = tf.reduce_mean(-log_likelihood, name='cross_entropy_mean_loss')
-            self.accuracy = tf.constant(1)
-
-
-
+            #pred = tf.Print(pred, [tf.shape(pred)], "pred=", summarize=10)
+            self.logits = tf.reshape(pred, [-1, num_time_steps, self.num_tags]) # B T O (20 * 48, 24)
+            #self.logits = tf.Print(logits, [tf.shape(logits)], "logits_output=", summarize=10)
 
         if not use_crf:
             self.labels_pred = tf.cast(tf.argmax(self.logits, axis=-1), tf.int32)
 
         if use_crf:
-
-
-
             #self.sentences_lengths = tf.Print(self.sentences_lengths, [self.sentences_lengths], "s=", summarize=10)
-            log_likelihood, self.transition_params = tf.contrib.crf.crf_log_likelihood(
-                self.logits, self.tags, self.sentences_lengths)
+            log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
+                self.logits, self.tags, self.sentences_lengths, transition_params=self.transition_params)
 
             self.loss = tf.reduce_mean(-log_likelihood)
         else:
@@ -528,7 +488,6 @@ class Model(object):
 
     def predict_batch(self, sess, words):
         feed_dict, sequence_lengths = self.get_feed_dict(words, dropout=1.0)
-        print("use_crf=", use_crf)
         if use_crf:
             viterbi_sequences = []
             logits, transition_params = sess.run([self.logits, self.transition_params], feed_dict=feed_dict)
@@ -537,7 +496,7 @@ class Model(object):
                 # keep only the valid time steps
                 logit = logit[:sequence_length]
                 viterbi_sequence, viterbi_score = tf.contrib.crf.viterbi_decode(logit, transition_params)
-                print("viterbi_seq=", viterbi_sequence, viterbi_score)
+                #print("viterbi_seq=", viterbi_sequence, viterbi_score)
                 viterbi_sequences += [viterbi_sequence]
             return viterbi_sequences, sequence_lengths
 
@@ -584,6 +543,7 @@ class Model(object):
     def evaluate(self, sess, test, tags):
         accs = []
         correct_preds, total_correct, total_preds = 0., 0., 0.
+        prf = collections.defaultdict(lambda: {'tp' : 0, 'ans' : 0, 'act': 0})
         for words, labels in mini_batch(test, batch_size):
             labels_pred, sequence_lengths = self.predict_batch(sess, words)
 
@@ -592,11 +552,24 @@ class Model(object):
                 lab_pred = lab_pred[:length]
                 accs += [a == b for (a, b) in zip(lab, lab_pred)]
                 lab_chunks = set(get_chunks(lab, tags))
-                lab_pred_chunks = set(get_chunks(lab_pred, tags))
-                correct_preds += len(lab_chunks & lab_pred_chunks)
+                for lab_chunk in lab_chunks:
+                    prf[lab_chunk[0]]['act'] += 1
+                lab_pred_chunks = get_chunks(lab_pred, tags)
+                lab_pred_chunks = set(lab_pred_chunks)
+                for lab_pred_chunk in lab_pred_chunks:
+                    prf[lab_pred_chunk[0]]['ans'] += 1
+                lab_corr_chunks = lab_chunks & lab_pred_chunks
+                for lab_corr_chunk in lab_corr_chunks:
+                    prf[lab_corr_chunk[0]]['tp'] += 1
+                correct_preds += len(lab_corr_chunks)
                 total_preds += len(lab_pred_chunks)
                 total_correct += len(lab_chunks)
 
+        for label in prf:
+            p = prf[label]['tp'] / float(prf[label]['ans']) if prf[label]['ans'] > 0 else 0.0
+            r = prf[label]['tp'] / float(prf[label]['act']) if prf[label]['act'] > 0 else 0.0
+            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+            print("{:<10} {:04.2f} {:04.2f} {:04.2f}".format(label, p*100.0, r*100.0, f1*100.0))
         p = correct_preds / total_preds if correct_preds > 0 else 0
         r = correct_preds / total_correct if correct_preds > 0 else 0
         f1 = 2 * p * r / (p + r) if correct_preds > 0 else 0
@@ -806,8 +779,8 @@ def run(input_dir):
     num_chars = len(char_vocab)
     num_labels = len(tag_vocab)
 
-    #max_sentence_len = train.max_length()
-    max_sentence_len = 48
+    max_sentence_len = train.max_length()
+    #max_sentence_len = 150
 
     max_word_len = min(train.max_word_length(), 20)
 
