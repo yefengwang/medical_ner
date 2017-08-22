@@ -54,6 +54,7 @@ lstm_hidden_size = 300 # LSTM hidden size
 converge_check = 20
 use_chars = True
 use_crf = True
+use_char_attention = True
 clip = 5
 batch_size = 20
 num_epochs = 35
@@ -61,7 +62,7 @@ dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
 
-reload_model = False
+reload_model = True
 
 UNK = "<<UNK>>"
 NUM = "<<NUM>>"
@@ -347,27 +348,30 @@ class Model(object):
                 #cnn_hidden_flat = tf.Print(cnn_hidden_flat, [tf.shape(cnn_hidden_flat)], "pool=", summarize=10)
                 # cnn_hidden_flat = [batch_size, max_sentence_len, num_kernels * num_filters]
                 
-                """
-                char_hidden_size = tf.shape(cnn_hidden_flat.shape)[-1]
-                # Char Attention Here
-                with tf.variable_scope("chars_attention"):
-                
-                    # Attention mechanism
-                    W_omega = tf.get_variable(initializer=tf.random_normal([char_hidden_size, attention_size], stddev=0.1),
-                                              name="attention_W", dtype=tf.float32)
-                    b_omega = tf.get_variable(initializer=tf.random_normal([attention_size], stddev=0.1),
-                                              name="attention_b", dtype=tf.float32)
-                    u_omega = tf.get_variable(initializer=tf.random_normal([attention_size], stddev=0.1),
-                                              name="attention_u", dtype=tf.float32)
-                    v = tf.tanh(tf.matmul(tf.reshape(cnn_hidden_flat, [-1, hidden_size]), W_omega) + tf.reshape(b_omega, [1, -1]))
-                    vu = tf.matmul(v, tf.reshape(u_omega, [-1, 1]))
-                    exps = tf.reshape(tf.exp(vu), [-1, sequence_length])
-                    alphas = exps / tf.reshape(tf.reduce_sum(exps, 1), [-1, 1])
 
-                    # Output of Bi-RNN is reduced with attention vector
-                    output = tf.reduce_sum(inputs * tf.reshape(alphas, [-1, sequence_length, 1]), 1)                    
-                """
-                word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
+                #char_hidden_size = tf.shape(cnn_hidden_flat.shape)[-1]
+                if use_char_attention:
+                    # Char Attention Here
+                    with tf.variable_scope("chars_attention"):
+                        # Attention mechanism
+                        attention_evidence_tensor = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
+                        dim = tf.shape(attention_evidence_tensor)[2]
+                        seq_len = tf.shape(attention_evidence_tensor)[1]
+                        attention_evidence_tensor = tf.reshape(attention_evidence_tensor, [-1, dim])
+
+                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size + cnn_hidden_total, word_embedding_size], stddev=0.1),
+                                             name="attention_W1", dtype=tf.float32)
+                        b1 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b1", dtype=tf.float32)
+                        attention_output = tf.tanh(tf.matmul(attention_evidence_tensor, w1) + b1, name="attention_tanh")
+
+                        w2 = tf.get_variable(initializer=tf.random_normal([word_embedding_size, word_embedding_size], stddev=0.1),
+                                             name="attention_W2", dtype=tf.float32)
+                        b2 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b2", dtype=tf.float32)
+                        attention_output = tf.sigmoid(tf.matmul(attention_output, w2) + b2, name="attention_sigmoid")
+                        word_embeddings = word_embeddings * attention_output + cnn_hidden_flat * (1.0 - attention_output)
+                        word_embeddings = tf.reshape(word_embeddings, [-1, seq_len, dim])
+                else:
+                    word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
 
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
@@ -569,7 +573,8 @@ class Model(object):
             p = prf[label]['tp'] / float(prf[label]['ans']) if prf[label]['ans'] > 0 else 0.0
             r = prf[label]['tp'] / float(prf[label]['act']) if prf[label]['act'] > 0 else 0.0
             f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-            print("{:<10} {:04.2f} {:04.2f} {:04.2f}".format(label, p*100.0, r*100.0, f1*100.0))
+            label = label + "  " if len(label) == 2 else label
+            print("{} {:04.2f} {:04.2f} {:04.2f}".format(label, p*100.0, r*100.0, f1*100.0))
         p = correct_preds / total_preds if correct_preds > 0 else 0
         r = correct_preds / total_correct if correct_preds > 0 else 0
         f1 = 2 * p * r / (p + r) if correct_preds > 0 else 0
