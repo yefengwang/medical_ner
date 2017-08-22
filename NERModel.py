@@ -46,8 +46,8 @@ learning_rate_decay = 0.9
 
 # Hyper parameters
 word_embedding_size = 500 # word embedding size
-char_embedding_size = 300 # char embedding size
-filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+char_embedding_size = 500 # char embedding size
+filter_sizes = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
 cnn_hidden_size = 200 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
@@ -62,7 +62,7 @@ dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
 
-reload_model = True
+reload_model = False
 
 UNK = "<<UNK>>"
 NUM = "<<NUM>>"
@@ -344,22 +344,30 @@ class Model(object):
                 # Combine all the pooled features
                 cnn_hidden_total = cnn_hidden_size * len(filter_sizes)
                 cnn_hidden = tf.concat(char_cnn_outputs, 3)
-                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
+                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, cnn_hidden_total])
+
                 #cnn_hidden_flat = tf.Print(cnn_hidden_flat, [tf.shape(cnn_hidden_flat)], "pool=", summarize=10)
                 # cnn_hidden_flat = [batch_size, max_sentence_len, num_kernels * num_filters]
-                
 
-                #char_hidden_size = tf.shape(cnn_hidden_flat.shape)[-1]
+                # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
+
+                # Change h* to m via another feedforward network
+                wm = tf.get_variable(
+                                initializer=tf.random_normal([cnn_hidden_total, word_embedding_size], stddev=0.1),
+                                name="charword_W", dtype=tf.float32)
+                bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
+                                     name="charword_b", dtype=tf.float32)
+
+                char_word = tf.matmul(cnn_hidden_flat, wm) + bm
+                word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
+
                 if use_char_attention:
                     # Char Attention Here
                     with tf.variable_scope("chars_attention"):
                         # Attention mechanism
-                        attention_evidence_tensor = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
-                        dim = tf.shape(attention_evidence_tensor)[2]
-                        seq_len = tf.shape(attention_evidence_tensor)[1]
-                        attention_evidence_tensor = tf.reshape(attention_evidence_tensor, [-1, dim])
+                        attention_evidence_tensor = tf.concat([word_embeddings, char_word], axis=-1)
 
-                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size + cnn_hidden_total, word_embedding_size], stddev=0.1),
+                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size * 2, word_embedding_size], stddev=0.1),
                                              name="attention_W1", dtype=tf.float32)
                         b1 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b1", dtype=tf.float32)
                         attention_output = tf.tanh(tf.matmul(attention_evidence_tensor, w1) + b1, name="attention_tanh")
@@ -368,11 +376,11 @@ class Model(object):
                                              name="attention_W2", dtype=tf.float32)
                         b2 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b2", dtype=tf.float32)
                         attention_output = tf.sigmoid(tf.matmul(attention_output, w2) + b2, name="attention_sigmoid")
-                        word_embeddings = word_embeddings * attention_output + cnn_hidden_flat * (1.0 - attention_output)
-                        word_embeddings = tf.reshape(word_embeddings, [-1, seq_len, dim])
+                        word_embeddings = word_embeddings * attention_output + char_word * (1.0 - attention_output)
                 else:
                     word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
 
+                word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size])
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
