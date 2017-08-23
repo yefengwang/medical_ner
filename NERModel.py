@@ -237,31 +237,26 @@ class Vocab:
                 self.max_idx = max(idx, self.max_idx)
 
 
+def viterbi_decode(score, transition_params, invalid_transitions):
+    trellis = np.zeros_like(score)
+    backpointers = np.zeros_like(score, dtype=np.int32)
+    trellis[0] = score[0]
 
+    # The invalid sequences should not produce any transition
+    for i, j in invalid_transitions:
+        transition_params[i, j] = -100000.0
+    for t in range(1, score.shape[0]):
+        v = np.expand_dims(trellis[t - 1], 1) + transition_params
+        trellis[t] = score[t] + np.max(v, 0)
+        backpointers[t] = np.argmax(v, 0)
 
-def viterbi_decode(score, transition_params,  num_tags, invalid_transitions):
+    viterbi = [np.argmax(trellis[-1])]
+    for bp in reversed(backpointers[1:]):
+        viterbi.append(bp[viterbi[-1]])
+    viterbi.reverse()
 
-  trellis = np.zeros_like(score)
-  backpointers = np.zeros_like(score, dtype=np.int32)
-  trellis[0] = score[0]
-
-  for i, j in invalid_transitions:
-    transition_params[i-1, j-1] = -1000.0
-
-
-  for t in range(1, score.shape[0]):
-    v = np.expand_dims(trellis[t - 1], 1) + transition_params
-    trellis[t] = score[t] + np.max(v, 0)
-    backpointers[t] = np.argmax(v, 0)
-
-  viterbi = [np.argmax(trellis[-1])]
-  for bp in reversed(backpointers[1:]):
-    viterbi.append(bp[viterbi[-1]])
-  viterbi.reverse()
-
-  viterbi_score = np.max(trellis[-1])
-  print(viterbi_score)
-  return viterbi, viterbi_score
+    viterbi_score = np.max(trellis[-1])
+    return viterbi, viterbi_score
 
 
 class Model(object):
@@ -547,7 +542,7 @@ class Model(object):
             for logit, sequence_length in zip(logits, sequence_lengths):
                 # keep only the valid time steps
                 logit = logit[:sequence_length]
-                viterbi_sequence, viterbi_score = viterbi_decode(logit, transition_params, self.num_tags, self.invalid_transitions)
+                viterbi_sequence, viterbi_score = viterbi_decode(logit, transition_params, self.invalid_transitions)
                 #print("viterbi_seq=", viterbi_sequence, viterbi_score)
                 viterbi_sequences += [viterbi_sequence]
             return viterbi_sequences, sequence_lengths
@@ -813,6 +808,7 @@ def run_predict(input_dir):
     input_seq = ["主", "诉", "：", "发现", "心脏", "杂音", "7", "月"]
     print(model.predict(input_seq, word_vocab, char_vocab, label_vocab))
 
+tag_vocab = None
 
 def run(input_dir):
 
@@ -824,6 +820,7 @@ def run(input_dir):
     char_vocab = Vocab(char_vocab_filename, encode_char=True)
     word_vocab = Vocab(word_vocab_filename)
     tag_vocab = Vocab(label_vocab_filename, encode_tag=True)
+    global tag_vocab
     invalid_transitions = []
     for label1 in tag_vocab.encoding_map.keys():
         for label2 in tag_vocab.encoding_map.keys():
@@ -834,7 +831,6 @@ def run(input_dir):
             elif label2[0] == "I" and label2[2:] != label1[2:]:
                 invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
                 invalid_transitions.append(invalid_transition)
-    print(len(invalid_transitions))
 
     train = BIOFileLoader(train_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
     dev = BIOFileLoader(valid_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
@@ -844,8 +840,8 @@ def run(input_dir):
     num_chars = len(char_vocab)
     num_labels = len(tag_vocab)
 
-    #max_sentence_len = train.max_length()
-    max_sentence_len = 100
+    max_sentence_len = train.max_length()
+    #max_sentence_len = 100
 
     max_word_len = min(train.max_word_length(), 20)
 

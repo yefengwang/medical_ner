@@ -13,6 +13,7 @@ from Instance import Instance
 from BIODocument import BIODocument
 from Tokeniser import tokeniser
 
+import sys
 SBD = SentenceBoundaryDetector()
 
 
@@ -38,3 +39,10 @@ def prepare_sentence(text):
             token = [(t.start + start, t.end + start), text[t.start:t.end].strip(), t.partOfSpeech, "O"]
             sentence.append(token)
     return sentence
+
+if __name__ == "__main__":
+    text = open(sys.argv[1]).read()
+    for sentence in prepare_document(text):
+        tokens, _, _, _ = zip(*sentence)
+        print(tokens)
+        print()
