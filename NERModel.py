@@ -237,10 +237,37 @@ class Vocab:
                 self.max_idx = max(idx, self.max_idx)
 
 
+
+
+def viterbi_decode(score, transition_params,  num_tags, invalid_transitions):
+
+  trellis = np.zeros_like(score)
+  backpointers = np.zeros_like(score, dtype=np.int32)
+  trellis[0] = score[0]
+
+  for i, j in invalid_transitions:
+    transition_params[i-1, j-1] = -1000.0
+
+
+  for t in range(1, score.shape[0]):
+    v = np.expand_dims(trellis[t - 1], 1) + transition_params
+    trellis[t] = score[t] + np.max(v, 0)
+    backpointers[t] = np.argmax(v, 0)
+
+  viterbi = [np.argmax(trellis[-1])]
+  for bp in reversed(backpointers[1:]):
+    viterbi.append(bp[viterbi[-1]])
+  viterbi.reverse()
+
+  viterbi_score = np.max(trellis[-1])
+  print(viterbi_score)
+  return viterbi, viterbi_score
+
+
 class Model(object):
 
     def __init__(self, num_words, num_tags, num_chars, max_sentence_len, 
-                 max_word_len, model_dir, word_embeddings=None, load_model=False):
+                 max_word_len, model_dir, word_embeddings=None, load_model=False, invalid_transitions=[]):
         self.num_words = num_words
         self.num_chars = num_chars
         self.num_tags = num_tags
@@ -248,6 +275,7 @@ class Model(object):
         self.max_sentence_len = max_sentence_len
         self.model_dir = model_dir
         self.learning_rate = learning_rate
+        self.invalid_transitions = invalid_transitions
 
         # shape = (batch size, max length of sentence in batch)
         self.words = tf.placeholder(tf.int32, shape=[None, None], name="words")
@@ -266,7 +294,19 @@ class Model(object):
         self.transition_params = tf.get_variable(
             "transitions",
             shape=[self.num_tags, self.num_tags],
-            initializer=tf.zeros_initializer)
+            initializer=tf.zeros_initializer())
+
+        """
+        # Doesn't work
+        invalid_transitions.sort()
+        indices = invalid_transitions
+        values = [1000.0] * len(indices)
+        shape = [self.num_tags, self.num_tags]
+        mask = tf.SparseTensor(indices, values, shape)
+        self.transition_params = self.transition_params + tf.sparse_tensor_to_dense(mask)
+        self.transition_params = tf.Print(self.transition_params, [self.transition_params], "transition=", summarize=10)
+        """
+
 
         self.train_op = None
         self.loss = None
@@ -423,6 +463,7 @@ class Model(object):
             log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
                 self.logits, self.tags, self.sentences_lengths, transition_params=self.transition_params)
 
+            #self.transition_params = tf.Print(self.transition_params, [self.transition_params], "trans_params=", summarize=24)
             self.loss = tf.reduce_mean(-log_likelihood)
         else:
             losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=self.tags)
@@ -497,7 +538,6 @@ class Model(object):
                             nepoch_no_imprv))
                         break
 
-
     def predict_batch(self, sess, words):
         feed_dict, sequence_lengths = self.get_feed_dict(words, dropout=1.0)
         if use_crf:
@@ -507,7 +547,7 @@ class Model(object):
             for logit, sequence_length in zip(logits, sequence_lengths):
                 # keep only the valid time steps
                 logit = logit[:sequence_length]
-                viterbi_sequence, viterbi_score = tf.contrib.crf.viterbi_decode(logit, transition_params)
+                viterbi_sequence, viterbi_score = viterbi_decode(logit, transition_params, self.num_tags, self.invalid_transitions)
                 #print("viterbi_seq=", viterbi_sequence, viterbi_score)
                 viterbi_sequences += [viterbi_sequence]
             return viterbi_sequences, sequence_lengths
@@ -532,10 +572,10 @@ class Model(object):
             return [label_vocab.decode(label) for label in labels_pred[0]]
 
         if self.sess is None:
-            with tf.Session() as sess_:
-                saver = tf.train.Saver()
-                saver.restore(sess_, os.path.join(self.model_dir, "model"))
-                return pred(sess_, words)
+            self.sess = tf.Session()
+            saver = tf.train.Saver()
+            saver.restore(self.sess, os.path.join(self.model_dir, "model"))
+            return pred(self.sess, words)
         else:
             return pred(self.sess, words)
 
@@ -725,6 +765,7 @@ def get_input_filenames(input_dir):
     test_filename = os.path.join(input_dir, "test.txt")
     return train_filename, valid_filename, test_filename
 
+
 def main():
     parser = OptionParser(usage="usage: %prog [option] data_dir\n"
                                 "\n"
@@ -783,6 +824,17 @@ def run(input_dir):
     char_vocab = Vocab(char_vocab_filename, encode_char=True)
     word_vocab = Vocab(word_vocab_filename)
     tag_vocab = Vocab(label_vocab_filename, encode_tag=True)
+    invalid_transitions = []
+    for label1 in tag_vocab.encoding_map.keys():
+        for label2 in tag_vocab.encoding_map.keys():
+            if label1 == OUTSIDE:
+                if label2[0] == "I":
+                    invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
+                    invalid_transitions.append(invalid_transition)
+            elif label2[0] == "I" and label2[2:] != label1[2:]:
+                invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
+                invalid_transitions.append(invalid_transition)
+    print(len(invalid_transitions))
 
     train = BIOFileLoader(train_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
     dev = BIOFileLoader(valid_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
@@ -792,15 +844,16 @@ def run(input_dir):
     num_chars = len(char_vocab)
     num_labels = len(tag_vocab)
 
-    max_sentence_len = train.max_length()
-    #max_sentence_len = 150
+    #max_sentence_len = train.max_length()
+    max_sentence_len = 100
 
     max_word_len = min(train.max_word_length(), 20)
 
     print("max_sentence={}".format(max_sentence_len))
     print("max_word={}".format(max_word_len))
 
-    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir)
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir,
+                  invalid_transitions=invalid_transitions)
 
     vocab_tags = tag_vocab.encoding_map
 
