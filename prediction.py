@@ -2,6 +2,8 @@ import os
 import sys
 import tensorflow as tf
 
+from preprocessing import prepare_document, prepare_sentence
+
 from NERModel import Vocab, Model
 from NERModel import get_vocab_filenames
 
@@ -29,9 +31,19 @@ class NERClassifier:
         self.model = model
 
     def predict(self, input_seq):
-        input_seq = ["主", "诉", "：", "发现", "心脏", "杂音", "7", "月"]
         return self.model.predict(input_seq, self.word_vocab, self.char_vocab, self.label_vocab)
 
 if __name__ == "__main__":
+    if len(sys.argv) <= 1:
+        sys.exit(0)
+
     classifier = NERClassifier(sys.argv[1])
-    print(classifier.predict([]))
+
+    document = open(sys.argv[2]).read()
+    sentences = prepare_document(document)
+    for sentence in sentences:
+        tokens, position, pos, tags = zip(*sentence)
+        tags = classifier.predict(tokens)
+        for (token, tag) in zip(tokens, tags):
+            print("{}\t{}".format(token, tag))
+        print()
