@@ -82,6 +82,8 @@ def read_annotation(filename):
             ann_type = mention[1]
             ann_text = mention[2]
             ann_type = re.sub(r'[A-Za-z]+', '', ann_type)
+            if ann_type == '部位':
+                ann_type = '身体部位'
             annotations[mention_id] = (start, end, ann_type, ann_text, {})
 
     for mention_id, mention in class_mentions.items():

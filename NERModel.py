@@ -45,10 +45,10 @@ learning_rate_decay = 0.9
 # Hyper parameters
 
 # Hyper parameters
-word_embedding_size = 500 # word embedding size
-char_embedding_size = 500 # char embedding size
+word_embedding_size = 100 # word embedding size
+char_embedding_size = 100 # char embedding size
 filter_sizes = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
-cnn_hidden_size = 200 # CNN output
+cnn_hidden_size = 100 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
 converge_check = 20
@@ -64,6 +64,7 @@ learning_rate_decay = 0.9
 
 reload_model = False
 
+PAD = "<<PAD>>"
 UNK = "<<UNK>>"
 NUM = "<<NUM>>"
 OUTSIDE = "O"
@@ -153,26 +154,21 @@ class Vocab:
         self.encode_char = encode_char
         self.encode_tag = encode_tag
         self._insert = True
-        if not self.encode_tag:
-            self._encode(UNK, add=True)
-            if not self.encode_char:
-                self._encode(NUM, add=True)
-        else:
-            self._encode(OUTSIDE, add=True)
+
         if filename:
             self.load(filename)
             self._insert = False
-        # add the special char to the set anyway.
-        if not self.encode_tag:
-            self._encode(UNK, add=True)
-            if not self.encode_char:
-                self._encode(NUM, add=True)
         else:
-            self._encode(OUTSIDE, add=True)
+            if not self.encode_tag:
+                self._encode(PAD, add=True)
+                self._encode(UNK, add=True)
+                if not self.encode_char:
+                    self._encode(NUM, add=True)
+            else:
+                self._encode(OUTSIDE, add=True)
 
     def __len__(self):
-        #return len(self.encoding_map)
-        return self.max_idx + 1
+        return len(self.encoding_map)
 
     def encodes(self, seq):
         '''
@@ -209,8 +205,9 @@ class Vocab:
         if lower:
             word = word.lower()
         if add:
-            idx = self.encoding_map.get(word, self.max_idx + 1)
-            self.max_idx = max(idx, self.max_idx)
+            idx = self.encoding_map.get(word, self.max_idx)
+            if idx == self.max_idx:
+                self.max_idx += 1
             self.encoding_map[word] = idx
             self.decoding_map[idx] = word
         else:
@@ -222,8 +219,9 @@ class Vocab:
         return idx
 
     def save(self, filename):
+        import operator
         with open(filename, "w") as f:
-            for word, idx in self.encoding_map.items():
+            for word, idx in sorted(self.encoding_map.items(), key=operator.itemgetter(1)):
                 f.write("%s\t%s\n" % (word, idx))
 
     def load(self, filename):
@@ -272,6 +270,8 @@ class Model(object):
         self.learning_rate = learning_rate
         self.invalid_transitions = invalid_transitions
 
+
+        print("num_tags=", self.num_tags)
         # shape = (batch size, max length of sentence in batch)
         self.words = tf.placeholder(tf.int32, shape=[None, None], name="words")
         # shape = (batch size, max length of sentence, max length of word)
@@ -328,11 +328,10 @@ class Model(object):
                 #s = tf.Print(s, [s], "s=", summarize=10)
 
                 char_embeddings = tf.reshape(char_embeddings, shape=[-1, s[-2], char_embedding_size])
-                #char_embeddings = tf.Print(char_embeddings, [tf.shape(char_embeddings)], "embedding_shape=",
-                #                           summarize=10)
-                word_lengths = tf.reshape(self.word_lengths, shape=[-1])
-                #word_lengths = tf.Print(word_lengths, [word_lengths], "word_lengths=", summarize=10)
+
                 """
+                word_lengths = tf.reshape(self.word_lengths, shape=[-1])
+
                 # word level LSTM
                 cell_fw = tf.contrib.rnn.LSTMCell(self.config.char_hidden_size, 
                                                     state_is_tuple=True)
@@ -379,24 +378,27 @@ class Model(object):
                 # Combine all the pooled features
                 cnn_hidden_total = cnn_hidden_size * len(filter_sizes)
                 cnn_hidden = tf.concat(char_cnn_outputs, 3)
-                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, cnn_hidden_total])
+                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
 
-                #cnn_hidden_flat = tf.Print(cnn_hidden_flat, [tf.shape(cnn_hidden_flat)], "pool=", summarize=10)
-                # cnn_hidden_flat = [batch_size, max_sentence_len, num_kernels * num_filters]
 
-                # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
 
-                # Change h* to m via another feedforward network
-                wm = tf.get_variable(
-                                initializer=tf.random_normal([cnn_hidden_total, word_embedding_size], stddev=0.1),
-                                name="charword_W", dtype=tf.float32)
-                bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
-                                     name="charword_b", dtype=tf.float32)
+                if False: #use_char_attention:
 
-                char_word = tf.matmul(cnn_hidden_flat, wm) + bm
-                word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
+                    # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
 
-                if use_char_attention:
+                    # Change h* to m via another feedforward network
+
+                    cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, cnn_hidden_total])
+                    word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
+
+                    wm = tf.get_variable(
+                                    initializer=tf.random_normal([cnn_hidden_total, word_embedding_size], stddev=0.1),
+                                    name="charword_W", dtype=tf.float32)
+                    bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
+                                         name="charword_b", dtype=tf.float32)
+
+                    char_word = tf.matmul(cnn_hidden_flat, wm) + bm
+
                     # Char Attention Here
                     with tf.variable_scope("chars_attention"):
                         # Attention mechanism
@@ -412,10 +414,11 @@ class Model(object):
                         b2 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b2", dtype=tf.float32)
                         attention_output = tf.sigmoid(tf.matmul(attention_output, w2) + b2, name="attention_sigmoid")
                         word_embeddings = word_embeddings * attention_output + char_word * (1.0 - attention_output)
+                        word_embeddings = tf.reshape(word_embeddings,
+                                                     [-1, s[1], word_embedding_size])
                 else:
                     word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
-
-                word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size])
+                    word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size + cnn_hidden_total])
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
@@ -455,6 +458,7 @@ class Model(object):
 
         if use_crf:
             #self.sentences_lengths = tf.Print(self.sentences_lengths, [self.sentences_lengths], "s=", summarize=10)
+
             log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
                 self.logits, self.tags, self.sentences_lengths, transition_params=self.transition_params)
 
@@ -627,10 +631,10 @@ class Model(object):
 
     def get_feed_dict(self, words, labels=None, lr=None, dropout=None):
         words, chars = zip(*words)
-
-        words, sentences_lengths = pad_sentence(words, 0, max_length=self.max_sentence_len)
+        words, sentences_lengths = pad_sentence(words, 0)
+        #print(len(words[0]))
         chars, word_lengths = pad_chars(chars, pad_tok=0,
-                                        max_word_length=self.max_word_len, max_sentence_length=self.max_sentence_len)
+                                        max_word_length=self.max_word_len)
 
         feed = {
             self.words: words,
@@ -640,7 +644,8 @@ class Model(object):
         }
 
         if labels is not None:
-            labels, _ = pad_sequences(labels, 0, self.max_sentence_len)
+            labels, _ = pad_sentence(labels, 0)
+            #print(len(labels[0]))
             feed[self.tags] = labels
 
         if lr is not None:
