@@ -47,7 +47,7 @@ learning_rate_decay = 0.9
 # Hyper parameters
 word_embedding_size = 100 # word embedding size
 char_embedding_size = 100 # char embedding size
-filter_sizes = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
+kernels = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
 cnn_hidden_size = 100 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
@@ -352,10 +352,11 @@ class Model(object):
                 char_cnn_outputs = []
                 # add channel
                 char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
-                for i, filter_size in enumerate(filter_sizes):
-                    with tf.name_scope("conv-maxpool-%s" % filter_size):
+                for i, kernel_dim in enumerate(kernels):
+                    reduced_length = self.max_word_len - kernel_dim + 1
+                    with tf.name_scope("conv-maxpool-%s" % kernel_dim):
                         # Convolution Layer
-                        filter_shape = [filter_size, char_embedding_size, 1, cnn_hidden_size]
+                        filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
                         char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
                         char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
                         conv = tf.nn.conv2d(
@@ -369,14 +370,14 @@ class Model(object):
                         # Maxpooling over the outputs, only on height
                         pooled = tf.nn.max_pool(
                             h,
-                            ksize=[1, self.max_word_len - filter_size + 1, 1, 1],
+                            ksize=[1, reduced_length, 1, 1],
                             strides=[1, 1, 1, 1],
                             padding='VALID',
                             name="pool")
                         char_cnn_outputs.append(pooled)
 
                 # Combine all the pooled features
-                cnn_hidden_total = cnn_hidden_size * len(filter_sizes)
+                cnn_hidden_total = cnn_hidden_size * len(kernels)
                 cnn_hidden = tf.concat(char_cnn_outputs, 3)
                 cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
 
@@ -487,6 +488,43 @@ class Model(object):
             self.sess = self.load_model()
         else:
             self.sess = None
+
+    def add_tdnn(self, char_embeddings, embed_dim,
+                 kernels=[1,2,3,4,5,6,7], feature_maps=[50, 100, 150, 200, 200, 200, 200]):
+        """Time-delayed Nueral Network (cf. http://arxiv.org/abs/1508.06615v4)
+        """
+        with tf.variable_scope("tdnn"):
+            layers = []
+            # add channel
+            char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
+            for i, kernel_dim in enumerate(kernels):
+                reduced_length = self.max_word_len - kernel_dim + 1
+                with tf.name_scope("conv-maxpool-%s" % i):
+                    # Convolution Layer
+                    filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
+                    char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
+                    char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
+                    conv = tf.nn.conv2d(
+                        char_embeddings_with_channel,
+                        char_cnn_W,
+                        strides=[1, 1, 1, 1],
+                        padding="VALID",
+                        name="conv")
+                    # Apply nonlinearity
+                    h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
+                    # Maxpooling over the outputs, only on height
+                    pooled = tf.nn.max_pool(
+                        h,
+                        ksize=[1, reduced_length, 1, 1],
+                        strides=[1, 1, 1, 1],
+                        padding='VALID',
+                        name="pool")
+                    char_cnn_outputs.append(pooled)
+
+            # Combine all the pooled features
+            cnn_hidden_total = cnn_hidden_size * len(kernels)
+            cnn_hidden = tf.concat(char_cnn_outputs, 3)
+            cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
 
     def load_model(self):
         saver = tf.train.Saver()
