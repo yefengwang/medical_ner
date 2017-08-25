@@ -14,16 +14,41 @@ import sys
 from optparse import OptionParser
 import collections
 
-from Vocab import Vocab
-from Vocab import NUM, PAD, OUTSIDE, UNK
-
-from save_embeddings import read_embeddings_vocab, save_char_embeddings, save_word_embeddings, load_embeddings
+"""
+Epoch 35 out of 35
+..............................
+- dev acc 84.54 - f1 64.99
+- new best score!
+Testing model over test set
+- test acc 87.94 - f1 74.78
 
 # Hyper parameters
-word_embedding_size = 100 # word embedding size
-char_embedding_size = 100 # char embedding size
-kernels = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
-cnn_hidden_size = 100 # CNN output
+word_embedding_size = 500 # word embedding size
+char_embedding_size = 300 # char embedding size
+filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+num_filters = 200 # CNN output
+hidden_size = 300 # LSTM hidden size
+
+converge_check = 20
+use_chars = True
+use_crf = True
+clip = 5
+batch_size = 20
+num_epochs = 35
+dropout = 0.5
+learning_rate = 0.001
+learning_rate_decay = 0.9
+"""
+
+
+
+# Hyper parameters
+
+# Hyper parameters
+word_embedding_size = 500 # word embedding size
+char_embedding_size = 300 # char embedding size
+filter_sizes = [2] # CNN filter sizes, use window 3, 4, 5 for char CNN
+cnn_hidden_size = 200 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
 converge_check = 20
@@ -37,7 +62,12 @@ dropout = 0.5
 learning_rate = 0.001
 learning_rate_decay = 0.9
 
-reload_model = False
+reload_model = True
+
+UNK = "<<UNK>>"
+NUM = "<<NUM>>"
+OUTSIDE = "O"
+
 
 def get_vocabs(datasets):
     vocab_words = set()
@@ -114,35 +144,103 @@ class BIOFileLoader(object):
         return self._length
 
 
-def viterbi_decode(score, transition_params, invalid_transitions):
-    trellis = np.zeros_like(score)
-    backpointers = np.zeros_like(score, dtype=np.int32)
-    trellis[0] = score[0]
+class Vocab:
 
-    # The invalid sequences should not produce any transition
-    #for i, j in invalid_transitions:
-    #    transition_params[i, j] = -100000.0
+    def __init__(self, filename=None, encode_char=False, encode_tag=False):
+        self.max_idx = 0
+        self.encoding_map = {}
+        self.decoding_map = {}
+        self.encode_char = encode_char
+        self.encode_tag = encode_tag
+        self._insert = True
+        if not self.encode_tag:
+            self._encode(UNK, add=True)
+            if not self.encode_char:
+                self._encode(NUM, add=True)
+        else:
+            self._encode(OUTSIDE, add=True)
+        if filename:
+            self.load(filename)
+            self._insert = False
+        # add the special char to the set anyway.
+        if not self.encode_tag:
+            self._encode(UNK, add=True)
+            if not self.encode_char:
+                self._encode(NUM, add=True)
+        else:
+            self._encode(OUTSIDE, add=True)
 
-    for t in range(1, score.shape[0]):
-        v = np.expand_dims(trellis[t - 1], 1) + transition_params
-        trellis[t] = score[t] + np.max(v, 0)
-        backpointers[t] = np.argmax(v, 0)
+    def __len__(self):
+        #return len(self.encoding_map)
+        return self.max_idx + 1
 
-    viterbi = [np.argmax(trellis[-1])]
-    for bp in reversed(backpointers[1:]):
-        viterbi.append(bp[viterbi[-1]])
-    viterbi.reverse()
+    def encodes(self, seq):
+        '''
+        encode a sequence
+        '''
+        return [self.encode(word) for word in seq]
 
-    viterbi_score = np.max(trellis[-1])
-    return viterbi, viterbi_score
+    def encode(self, word):
+        '''
+        encode a word or a char
+        '''
+        if self.encode_char:
+            return [self._encode(char, add=self._insert) for char in word]
+        else:
+            return self._encode(word, add=self._insert)
+
+    def encode_datasets(self, datasets):
+        for dataset in datasets:
+            for (xws, xcs), ys in dataset:
+                if self.encode_tag:
+                    self.encodes(ys)
+                elif self.encode_char:
+                    self.encodes(xcs)
+                else:
+                    self.encodes(xws)
+
+    def decodes(self, idxs):
+        return map(self.decode, idxs)
+
+    def decode(self, idx):
+        return self.decoding_map.get(idx, UNK)
+
+    def _encode(self, word, lower=False, add=False):
+        if lower:
+            word = word.lower()
+        if add:
+            idx = self.encoding_map.get(word, self.max_idx + 1)
+            self.max_idx = max(idx, self.max_idx)
+            self.encoding_map[word] = idx
+            self.decoding_map[idx] = word
+        else:
+            if self.encode_tag:
+                idx = self.encoding_map.get(word, self.encoding_map[OUTSIDE])
+            else:
+                idx = self.encoding_map.get(word, self.encoding_map[UNK])
+
+        return idx
+
+    def save(self, filename):
+        with open(filename, "w") as f:
+            for word, idx in self.encoding_map.items():
+                f.write("%s\t%s\n" % (word, idx))
+
+    def load(self, filename):
+        with open(filename, "r") as f:
+            for line in f:
+                line = line.strip()
+                word, idx = line.split("\t")
+                idx = int(idx)
+                self.encoding_map[word] = idx
+                self.decoding_map[idx] = word
+                self.max_idx = max(idx, self.max_idx)
 
 
 class Model(object):
 
     def __init__(self, num_words, num_tags, num_chars, max_sentence_len, 
-                 max_word_len, model_dir,
-                 word_embeddings=None, char_embeddings=None,
-                 load_model=False, invalid_transitions=[]):
+                 max_word_len, model_dir, word_embeddings=None, load_model=False):
         self.num_words = num_words
         self.num_chars = num_chars
         self.num_tags = num_tags
@@ -150,7 +248,6 @@ class Model(object):
         self.max_sentence_len = max_sentence_len
         self.model_dir = model_dir
         self.learning_rate = learning_rate
-        self.invalid_transitions = invalid_transitions
 
         # shape = (batch size, max length of sentence in batch)
         self.words = tf.placeholder(tf.int32, shape=[None, None], name="words")
@@ -169,16 +266,15 @@ class Model(object):
         self.transition_params = tf.get_variable(
             "transitions",
             shape=[self.num_tags, self.num_tags],
-            initializer=tf.zeros_initializer())
-
+            initializer=tf.zeros_initializer)
 
         self.train_op = None
         self.loss = None
+
         with tf.variable_scope("words"):
             if word_embeddings is not None:
-                with tf.device('/cpu:0'):
-                    word_embeddings_W = tf.Variable(word_embeddings, name="word_embedding_w", dtype=tf.float32, trainable=True)
-                    word_embeddings = tf.nn.embedding_lookup(word_embeddings_W, self.words, name="word_embeddings")
+                word_embeddings_W = tf.Variable(word_embeddings, name="word_embedding_w", dtype=tf.float32, trainable=True)
+                word_embeddings = tf.nn.embedding_lookup(word_embeddings_W, self.words, name="word_embeddings")
             else:
                 word_embeddings_W = tf.get_variable(name="word_embeddings_w", dtype=tf.float32,
                                                     shape=[self.num_words, word_embedding_size],
@@ -187,24 +283,21 @@ class Model(object):
 
         with tf.variable_scope("chars"):
             if use_chars:
-                if char_embeddings is not None:
-                    with tf.device('/cpu:0'):
-                        char_embeddings_W = tf.Variable(char_embeddings, name="char_embeddings_w", dtype=tf.float32, trainable=True)
-                        char_embeddings = tf.nn.embedding_lookup(char_embeddings_W, self.chars, name="char_embeddings")
-                else:
-                    char_embeddings_W = tf.get_variable(name="char_embeddings_w", dtype=tf.float32,
-                                                        shape=[self.num_chars, char_embedding_size],
-                                                        initializer=tf.random_normal_initializer())
-                    char_embeddings = tf.nn.embedding_lookup(char_embeddings_W, self.chars, name="char_embeddings")
+                char_embeddings_W = tf.get_variable(name="char_embeddings_w", dtype=tf.float32,
+                                                    shape=[self.num_chars, char_embedding_size],
+                                                    initializer=tf.random_normal_initializer())
 
+                char_embeddings = tf.nn.embedding_lookup(char_embeddings_W, self.chars, name="char_embeddings")
+                # put the time dimension on axis=1
                 s = tf.shape(char_embeddings)
                 #s = tf.Print(s, [s], "s=", summarize=10)
 
                 char_embeddings = tf.reshape(char_embeddings, shape=[-1, s[-2], char_embedding_size])
-
-                """
+                #char_embeddings = tf.Print(char_embeddings, [tf.shape(char_embeddings)], "embedding_shape=",
+                #                           summarize=10)
                 word_lengths = tf.reshape(self.word_lengths, shape=[-1])
-
+                #word_lengths = tf.Print(word_lengths, [word_lengths], "word_lengths=", summarize=10)
+                """
                 # word level LSTM
                 cell_fw = tf.contrib.rnn.LSTMCell(self.config.char_hidden_size, 
                                                     state_is_tuple=True)
@@ -225,11 +318,10 @@ class Model(object):
                 char_cnn_outputs = []
                 # add channel
                 char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
-                for i, kernel_dim in enumerate(kernels):
-                    reduced_length = self.max_word_len - kernel_dim + 1
-                    with tf.name_scope("conv-maxpool-%s" % kernel_dim):
+                for i, filter_size in enumerate(filter_sizes):
+                    with tf.name_scope("conv-maxpool-%s" % filter_size):
                         # Convolution Layer
-                        filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
+                        filter_shape = [filter_size, char_embedding_size, 1, cnn_hidden_size]
                         char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
                         char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
                         conv = tf.nn.conv2d(
@@ -243,42 +335,31 @@ class Model(object):
                         # Maxpooling over the outputs, only on height
                         pooled = tf.nn.max_pool(
                             h,
-                            ksize=[1, reduced_length, 1, 1],
+                            ksize=[1, self.max_word_len - filter_size + 1, 1, 1],
                             strides=[1, 1, 1, 1],
                             padding='VALID',
                             name="pool")
                         char_cnn_outputs.append(pooled)
 
                 # Combine all the pooled features
-                cnn_hidden_total = cnn_hidden_size * len(kernels)
+                cnn_hidden_total = cnn_hidden_size * len(filter_sizes)
                 cnn_hidden = tf.concat(char_cnn_outputs, 3)
                 cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
+                #cnn_hidden_flat = tf.Print(cnn_hidden_flat, [tf.shape(cnn_hidden_flat)], "pool=", summarize=10)
+                # cnn_hidden_flat = [batch_size, max_sentence_len, num_kernels * num_filters]
+                
 
-
-
-                if False: #use_char_attention:
-
-                    # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
-
-                    # Change h* to m via another feedforward network
-
-                    cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, cnn_hidden_total])
-                    word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
-
-                    wm = tf.get_variable(
-                                    initializer=tf.random_normal([cnn_hidden_total, word_embedding_size], stddev=0.1),
-                                    name="charword_W", dtype=tf.float32)
-                    bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
-                                         name="charword_b", dtype=tf.float32)
-
-                    char_word = tf.matmul(cnn_hidden_flat, wm) + bm
-
+                #char_hidden_size = tf.shape(cnn_hidden_flat.shape)[-1]
+                if use_char_attention:
                     # Char Attention Here
                     with tf.variable_scope("chars_attention"):
                         # Attention mechanism
-                        attention_evidence_tensor = tf.concat([word_embeddings, char_word], axis=-1)
+                        attention_evidence_tensor = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
+                        dim = tf.shape(attention_evidence_tensor)[2]
+                        seq_len = tf.shape(attention_evidence_tensor)[1]
+                        attention_evidence_tensor = tf.reshape(attention_evidence_tensor, [-1, dim])
 
-                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size * 2, word_embedding_size], stddev=0.1),
+                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size + cnn_hidden_total, word_embedding_size], stddev=0.1),
                                              name="attention_W1", dtype=tf.float32)
                         b1 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b1", dtype=tf.float32)
                         attention_output = tf.tanh(tf.matmul(attention_evidence_tensor, w1) + b1, name="attention_tanh")
@@ -287,12 +368,11 @@ class Model(object):
                                              name="attention_W2", dtype=tf.float32)
                         b2 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b2", dtype=tf.float32)
                         attention_output = tf.sigmoid(tf.matmul(attention_output, w2) + b2, name="attention_sigmoid")
-                        word_embeddings = word_embeddings * attention_output + char_word * (1.0 - attention_output)
-                        word_embeddings = tf.reshape(word_embeddings,
-                                                     [-1, s[1], word_embedding_size])
+                        word_embeddings = word_embeddings * attention_output + cnn_hidden_flat * (1.0 - attention_output)
+                        word_embeddings = tf.reshape(word_embeddings, [-1, seq_len, dim])
                 else:
                     word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
-                    word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size + cnn_hidden_total])
+
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
@@ -332,11 +412,9 @@ class Model(object):
 
         if use_crf:
             #self.sentences_lengths = tf.Print(self.sentences_lengths, [self.sentences_lengths], "s=", summarize=10)
-
             log_likelihood, _ = tf.contrib.crf.crf_log_likelihood(
                 self.logits, self.tags, self.sentences_lengths, transition_params=self.transition_params)
 
-            #self.transition_params = tf.Print(self.transition_params, [self.transition_params], "trans_params=", summarize=24)
             self.loss = tf.reduce_mean(-log_likelihood)
         else:
             losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=self.tags)
@@ -361,45 +439,6 @@ class Model(object):
             self.sess = self.load_model()
         else:
             self.sess = None
-
-    def add_tdnn(self, char_embeddings, embed_dim,
-                 kernels=[1,2,3,4,5,6,7], feature_maps=[50, 100, 150, 200, 200, 200, 200]):
-        """Time-delayed Nueral Network (cf. http://arxiv.org/abs/1508.06615v4)
-        """
-        # dim = [B, T, W, E] batch, seqlen, wordlen, char_emb
-        shape = tf.shape(char_embeddings)
-        with tf.variable_scope("tdnn"):
-            layers = []
-            # add channel
-            char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
-            for i, kernel_dim in enumerate(kernels):
-                reduced_length = self.max_word_len - kernel_dim + 1
-                with tf.name_scope("conv-maxpool-%s" % i):
-                    # Convolution Layer
-                    filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
-                    char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
-                    char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
-                    conv = tf.nn.conv2d(
-                        char_embeddings_with_channel,
-                        char_cnn_W,
-                        strides=[1, 1, 1, 1],
-                        padding="VALID",
-                        name="conv")
-                    # Apply nonlinearity
-                    h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
-                    # Maxpooling over the outputs, only on height
-                    pooled = tf.nn.max_pool(
-                        h,
-                        ksize=[1, reduced_length, 1, 1],
-                        strides=[1, 1, 1, 1],
-                        padding='VALID',
-                        name="pool")
-                    layers.append(pooled)
-
-            # Combine all the pooled features
-            cnn_hidden_total = cnn_hidden_size * len(kernels)
-            cnn_hidden = tf.concat(layers, 3)
-            cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, shape[1], cnn_hidden_total])
 
     def load_model(self):
         saver = tf.train.Saver()
@@ -429,8 +468,6 @@ class Model(object):
                     sys.stdout.flush()
                     _, train_loss = sess.run([self.train_op, self.loss], feed_dict=fd)
                 #print()
-                sys.stdout.write("\n")
-                sys.stdout.flush()
                 acc, f1 = self.evaluate(sess, dev, tags)
                 print("# loss {:04.8f} acc {:04.2f} f1 {:04.2f}".format(train_loss, 100*acc, 100*f1))
 
@@ -452,6 +489,7 @@ class Model(object):
                             nepoch_no_imprv))
                         break
 
+
     def predict_batch(self, sess, words):
         feed_dict, sequence_lengths = self.get_feed_dict(words, dropout=1.0)
         if use_crf:
@@ -461,7 +499,7 @@ class Model(object):
             for logit, sequence_length in zip(logits, sequence_lengths):
                 # keep only the valid time steps
                 logit = logit[:sequence_length]
-                viterbi_sequence, viterbi_score = viterbi_decode(logit, transition_params, self.invalid_transitions)
+                viterbi_sequence, viterbi_score = tf.contrib.crf.viterbi_decode(logit, transition_params)
                 #print("viterbi_seq=", viterbi_sequence, viterbi_score)
                 viterbi_sequences += [viterbi_sequence]
             return viterbi_sequences, sequence_lengths
@@ -486,10 +524,10 @@ class Model(object):
             return [label_vocab.decode(label) for label in labels_pred[0]]
 
         if self.sess is None:
-            self.sess = tf.Session()
-            saver = tf.train.Saver()
-            saver.restore(self.sess, os.path.join(self.model_dir, "model"))
-            return pred(self.sess, words)
+            with tf.Session() as sess_:
+                saver = tf.train.Saver()
+                saver.restore(sess_, os.path.join(self.model_dir, "model"))
+                return pred(sess_, words)
         else:
             return pred(self.sess, words)
 
@@ -546,10 +584,10 @@ class Model(object):
 
     def get_feed_dict(self, words, labels=None, lr=None, dropout=None):
         words, chars = zip(*words)
-        words, sentences_lengths = pad_sentence(words, 0)
-        #print(len(words[0]))
+
+        words, sentences_lengths = pad_sentence(words, 0, max_length=self.max_sentence_len)
         chars, word_lengths = pad_chars(chars, pad_tok=0,
-                                        max_word_length=self.max_word_len)
+                                        max_word_length=self.max_word_len, max_sentence_length=self.max_sentence_len)
 
         feed = {
             self.words: words,
@@ -559,8 +597,7 @@ class Model(object):
         }
 
         if labels is not None:
-            labels, _ = pad_sentence(labels, 0)
-            #print(len(labels[0]))
+            labels, _ = pad_sequences(labels, 0, self.max_sentence_len)
             feed[self.tags] = labels
 
         if lr is not None:
@@ -680,7 +717,6 @@ def get_input_filenames(input_dir):
     test_filename = os.path.join(input_dir, "test.txt")
     return train_filename, valid_filename, test_filename
 
-
 def main():
     parser = OptionParser(usage="usage: %prog [option] data_dir\n"
                                 "\n"
@@ -728,7 +764,6 @@ def run_predict(input_dir):
     input_seq = ["主", "诉", "：", "发现", "心脏", "杂音", "7", "月"]
     print(model.predict(input_seq, word_vocab, char_vocab, label_vocab))
 
-tag_vocab = None
 
 def run(input_dir):
 
@@ -741,17 +776,6 @@ def run(input_dir):
     word_vocab = Vocab(word_vocab_filename)
     tag_vocab = Vocab(label_vocab_filename, encode_tag=True)
 
-    invalid_transitions = []
-    for label1 in tag_vocab.encoding_map.keys():
-        for label2 in tag_vocab.encoding_map.keys():
-            if label1 == OUTSIDE:
-                if label2[0] == "I":
-                    invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
-                    invalid_transitions.append(invalid_transition)
-            elif label2[0] == "I" and label2[2:] != label1[2:]:
-                invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
-                invalid_transitions.append(invalid_transition)
-
     train = BIOFileLoader(train_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
     dev = BIOFileLoader(valid_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
     test = BIOFileLoader(test_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
@@ -761,37 +785,26 @@ def run(input_dir):
     num_labels = len(tag_vocab)
 
     max_sentence_len = train.max_length()
-    #max_sentence_len = 100
+    #max_sentence_len = 150
 
     max_word_len = min(train.max_word_length(), 20)
 
     print("max_sentence={}".format(max_sentence_len))
     print("max_word={}".format(max_word_len))
 
-    word_embeddings_npz_filename = os.path.join(input_dir, "word.npz")
-    char_embeddings_npz_filename = os.path.join(input_dir, "char.npz")
-    word_embeddings = load_embeddings(word_embeddings_npz_filename)
-    char_embeddings = load_embeddings(char_embeddings_npz_filename)
-
-    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir,
-                  word_embeddings=word_embeddings, char_embeddings=char_embeddings, invalid_transitions=invalid_transitions)
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir)
 
     vocab_tags = tag_vocab.encoding_map
 
     model.train(train, dev, vocab_tags)
     model.test(test, vocab_tags)
 
-
 def build(input_dir):
     
     working_dir = input_dir 
+    # os.makedirs(working_dir, exist_ok=True)
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
     word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
-    word_embeddings_filename = os.path.join(working_dir, "word.txt")
-    char_embeddings_filename = os.path.join(working_dir, "char.txt")
-    word_embeddings_npz_filename = os.path.join(working_dir, "word.npz")
-    char_embeddings_npz_filename = os.path.join(working_dir, "char.npz")
-
 
     char_vocab = Vocab(encode_char=True)
     word_vocab = Vocab()
@@ -804,14 +817,6 @@ def build(input_dir):
     char_vocab.encode_datasets([train, valid])
     word_vocab.encode_datasets([train, valid])
     label_vocab.encode_datasets([train, valid])
-
-    vocab = read_embeddings_vocab(word_embeddings_filename)
-    word_vocab.update(vocab)
-    save_word_embeddings(word_embeddings_filename, word_embeddings_npz_filename, word_vocab.encoding_map)
-
-    vocab = read_embeddings_vocab(char_embeddings_filename)
-    char_vocab.update(vocab)
-    save_char_embeddings(char_embeddings_filename, char_embeddings_npz_filename, char_vocab.encoding_map)
 
     print("word vocab size {}".format(len(word_vocab)))
     print("char vocab size {}".format(len(char_vocab)))

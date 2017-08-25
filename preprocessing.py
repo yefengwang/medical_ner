@@ -44,5 +44,4 @@ if __name__ == "__main__":
     text = open(sys.argv[1]).read()
     for sentence in prepare_document(text):
         tokens, _, _, _ = zip(*sentence)
-        print(tokens)
-        print()
+        print(" ".join(tokens))

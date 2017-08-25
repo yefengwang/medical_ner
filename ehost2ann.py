@@ -84,6 +84,8 @@ def read_annotation(filename):
             ann_type = re.sub(r'[A-Za-z]+', '', ann_type)
             if ann_type == '部位':
                 ann_type = '身体部位'
+            if ann_type == '治疗方法':
+                ann_type = '治疗'
             annotations[mention_id] = (start, end, ann_type, ann_text, {})
 
     for mention_id, mention in class_mentions.items():
@@ -161,7 +163,9 @@ def convert(project_dirname, output_dirname, verbose=True):
         sys.stderr.write("%s : %s: Unable to create directory\n" % (program_name, project_dirname))
         sys.exit(1)
 
-    for filename in os.listdir(corpus_dirname):
+    files = os.listdir(corpus_dirname)
+    files.sort()
+    for filename in files:
         corpus_filename = os.path.join(corpus_dirname, filename)
         ann_filename = os.path.join(ann_dirname, filename) + KNOWATOR_FILE_EXTENSION
         output_filename = os.path.join(output_dirname, filename) + ANNOTATION_FILE_EXTENSION
