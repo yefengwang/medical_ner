@@ -14,13 +14,16 @@ from Token import Token
 # chars is equal to a string of alphabetical charaters and _
 chars = r'[a-zA-Z_]+'
 
-def strict_tokenise(text):
+def strict_tokenise(text, char_level=False):
     """
     A better tokeniser
     @param text (str): a text string to be tokenised.
     @return (str):
     """
-    words = pseg.cut(text)
+    if char_level:
+        words = list(text)
+    else:
+        words = pseg.cut(text)
     offset = 0
     for token, flag in words:
         start = offset
@@ -37,12 +40,8 @@ class Tokeniser:
         """
         pass
     
-    @classmethod
-    def strTokenise(self, text):
-        tokentext = tokeniseText(str(text))
-        return tokentext.split()
 
-    def tokenise(self, text, loose=False, offset=0):
+    def tokenise(self, text, loose=False, offset=0, char_level=False):
         """
         Tokenise text, return list of Tokens.
         """
@@ -50,8 +49,7 @@ class Tokeniser:
         tokens = []
         pos = 0
         tokenise = strict_tokenise
-        
-        for i, token_pos in enumerate(tokenise(text)):
+        for i, token_pos in enumerate(tokenise(text, char_level)):
             text_string = text[token_pos[0]:token_pos[1]]
             if text_string.strip() == "":
                 continue

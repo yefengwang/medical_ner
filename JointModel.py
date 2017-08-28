@@ -26,10 +26,10 @@ kernels = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
 cnn_hidden_size = 100 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
-converge_check = 30
+converge_check = 20
 use_chars = True
 use_crf = True
-use_char_attention = False
+use_char_attention = True
 clip = 5
 batch_size = 20
 num_epochs = 35
@@ -143,7 +143,6 @@ class Model(object):
                  max_word_len, model_dir,
                  word_embeddings=None, char_embeddings=None,
                  load_model=False, invalid_transitions=[]):
-        tf.reset_default_graph()
         self.num_words = num_words
         self.num_chars = num_chars
         self.num_tags = num_tags
@@ -257,7 +256,7 @@ class Model(object):
 
 
 
-                if use_char_attention: #use_char_attention:
+                if False: #use_char_attention:
 
                     # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
 
@@ -409,7 +408,7 @@ class Model(object):
         saver.restore(sess, os.path.join(self.model_dir, "model"))
         return sess
 
-    def train(self, train, dev, tags, result_filename):
+    def train(self, train, dev, tags):
         best_score = 0
         saver = tf.train.Saver()
         # for early stopping
@@ -432,7 +431,7 @@ class Model(object):
                 #print()
                 sys.stdout.write("\n")
                 sys.stdout.flush()
-                acc, f1 = self.evaluate(sess, dev, tags, result_filename)
+                acc, f1 = self.evaluate(sess, dev, tags)
                 print("# loss {:04.8f} acc {:04.2f} f1 {:04.2f}".format(train_loss, 100*acc, 100*f1))
 
                 # decay learning rate
@@ -499,15 +498,15 @@ class Model(object):
             self.sess.close()
             self.sess = None
 
-    def test(self, test, tags, result_filename):
+    def test(self, test, tags):
         saver = tf.train.Saver()
         with tf.Session() as sess:
             print("Testing model over test set")
             saver.restore(sess, os.path.join(self.model_dir, "model"))
-            acc, f1 = self.evaluate(sess, test, tags, result_filename)
+            acc, f1 = self.evaluate(sess, test, tags)
             print("# test acc {:04.2f} - f1 {:04.2f}".format(100 * acc, 100 * f1))
 
-    def evaluate(self, sess, test, tags, result_filename):
+    def evaluate(self, sess, test, tags):
         accs = []
         correct_preds, total_correct, total_preds = 0., 0., 0.
         prf = collections.defaultdict(lambda: {'tp' : 0, 'ans' : 0, 'act': 0})
@@ -531,33 +530,18 @@ class Model(object):
                 correct_preds += len(lab_corr_chunks)
                 total_preds += len(lab_pred_chunks)
                 total_correct += len(lab_chunks)
-        with open(result_filename, "w") as out_file:
-            ttp, tans, tact = 0, 0, 0
-            for label in prf:
-                tp = prf[label]['tp']
-                ans = prf[label]['ans']
-                act = prf[label]['act']
-                p = prf[label]['tp'] / float(prf[label]['ans']) if prf[label]['ans'] > 0 else 0.0
-                r = prf[label]['tp'] / float(prf[label]['act']) if prf[label]['act'] > 0 else 0.0
-                f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-                label = label + "    " if len(label) == 2 else label
-                label = label + "  " if len(label) == 3 else label
-                print("{} {} {} {} {:04.2f} {:04.2f} {:04.2f}".format(label, tp, ans, act, p*100.0, r*100.0, f1*100.0))
-                print("{} {} {} {} {:04.2f} {:04.2f} {:04.2f}".format(label, tp, ans, act, p*100.0, r*100.0, f1*100.0), file=out_file)
-                ttp += tp
-                tans += ans
-                tact += act
 
-            p = correct_preds / total_preds if correct_preds > 0 else 0
-            r = correct_preds / total_correct if correct_preds > 0 else 0
-            f1 = 2 * p * r / (p + r) if correct_preds > 0 else 0
-            print(
-                "{} {} {} {} {:04.2f} {:04.2f} {:04.2f}".format("Overall", ttp, tans, tact, p * 100.0, r * 100.0, f1 * 100.0))
-            print(
-                "{} {} {} {} {:04.2f} {:04.2f} {:04.2f}".format("Overall", ttp, tans, tact, p * 100.0, r * 100.0, f1 * 100.0),
-                file=out_file)
-            acc = np.mean(accs)
-            return acc, f1
+        for label in prf:
+            p = prf[label]['tp'] / float(prf[label]['ans']) if prf[label]['ans'] > 0 else 0.0
+            r = prf[label]['tp'] / float(prf[label]['act']) if prf[label]['act'] > 0 else 0.0
+            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+            label = label + "  " if len(label) == 2 else label
+            print("{} {:04.2f} {:04.2f} {:04.2f}".format(label, p*100.0, r*100.0, f1*100.0))
+        p = correct_preds / total_preds if correct_preds > 0 else 0
+        r = correct_preds / total_correct if correct_preds > 0 else 0
+        f1 = 2 * p * r / (p + r) if correct_preds > 0 else 0
+        acc = np.mean(accs)
+        return acc, f1
 
 
     def get_feed_dict(self, words, labels=None, lr=None, dropout=None):
@@ -705,7 +689,7 @@ def main():
                           version="%prog 1.0")
     parser.add_option('-b', '--build', action='store_true', dest='build', help='build the vocabulary')
 
-    parser.add_option('-f', '--folds', dest='num_folds', type=int, help='run crossvalidation')
+    parser.add_option('-p', '--predict', action='store_true', dest='predict', help='make prediction')
     (options, args) = parser.parse_args()
 
     if len(args) < 1:
@@ -715,27 +699,36 @@ def main():
 
     if options.build:
         build(input_dir)
-    elif options.num_folds:
-        num_folds = int(options.num_folds)
-        run_folds(input_dir, num_folds)
+    elif options.predict:
+        run_predict(input_dir)
     else:
         run(input_dir)
 
 
-def run_folds(input_dir, num_folds):
-    print("run %s folds cross validation..." % num_folds)
-    for fold_num in range(num_folds):
-        run_fold(input_dir, fold_num)
+def run_predict(input_dir):
+    model_dir = os.path.join(input_dir, "model")
 
+    word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(input_dir)
 
-def run_fold(input_dir, fold_num):
-    fold_dir = "fold_%s" % fold_num
-    input_dir = os.path.join(input_dir, fold_dir)
-    print("build...")
-    build(input_dir)
-    run(input_dir)
+    char_vocab = Vocab(char_vocab_filename, encode_char=True)
+    word_vocab = Vocab(word_vocab_filename)
+    label_vocab = Vocab(label_vocab_filename, encode_tag=True)
 
+    num_words = len(word_vocab)
+    num_chars = len(char_vocab)
+    num_labels = len(label_vocab)
 
+    # max_sentence_len = train.max_length()
+    max_sentence_len = 100
+
+    max_word_len = 20
+
+    model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir)
+
+    input_seq = ["主", "诉", "：", "发现", "心脏", "杂音", "7", "月"]
+    print(model.predict(input_seq, word_vocab, char_vocab, label_vocab))
+
+tag_vocab = None
 
 def run(input_dir):
 
@@ -780,28 +773,22 @@ def run(input_dir):
     word_embeddings = load_embeddings(word_embeddings_npz_filename)
     char_embeddings = load_embeddings(char_embeddings_npz_filename)
 
-    #model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir,
-    #              word_embeddings=word_embeddings, char_embeddings=char_embeddings, invalid_transitions=invalid_transitions)
-
     model = Model(num_words, num_labels, num_chars, max_sentence_len, max_word_len, model_dir,
-                  invalid_transitions=invalid_transitions)
-
+                  word_embeddings=word_embeddings, char_embeddings=char_embeddings, invalid_transitions=invalid_transitions)
 
     vocab_tags = tag_vocab.encoding_map
 
-    valid_result_filename = os.path.join(input_dir, "valid_res.txt")
-    model.train(train, dev, vocab_tags, valid_result_filename)
+    model.train(train, dev, vocab_tags)
+    model.test(test, vocab_tags)
 
-    test_result_filename = os.path.join(input_dir, "test_res.txt")
-    model.test(test, vocab_tags, test_result_filename)
 
 def build(input_dir):
-    embeddings_dirname = "."
+    
     working_dir = input_dir 
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
     word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
-    word_embeddings_filename = os.path.join(embeddings_dirname, "word.txt")
-    char_embeddings_filename = os.path.join(embeddings_dirname, "char.txt")
+    word_embeddings_filename = os.path.join(working_dir, "word.txt")
+    char_embeddings_filename = os.path.join(working_dir, "char.txt")
     word_embeddings_npz_filename = os.path.join(working_dir, "word.npz")
     char_embeddings_npz_filename = os.path.join(working_dir, "char.npz")
 

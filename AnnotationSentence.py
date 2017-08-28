@@ -1,13 +1,13 @@
 from Tokeniser import tokeniser
 
-def _tokenise_segment(segment):
+def _tokenise_segment(segment, char_level):
     (start, end), text, tag_type = segment
 
     bio_tag = "O"
     if tag_type:
         bio_tag = tag_type.replace(" ", "_")
     index = 0
-    for t in tokeniser.tokenise(text):
+    for t in tokeniser.tokenise(text, char_level=char_level):
         if text[t.start:t.end].strip():
             if bio_tag != "O":
                 if index == 0:
@@ -24,7 +24,8 @@ def _tokenise_segment(segment):
 
 class AnnotationSentence:
 
-    def __init__(self, doc_name, sent_num, start, end, annotations, text):
+    def __init__(self, doc_name, sent_num, start, end, annotations, text, char_level=False):
+        self.char_level = char_level
         if type(text) == str:
             self.annotations = annotations
             self.num = sent_num
@@ -33,7 +34,7 @@ class AnnotationSentence:
             self.end = end
             self.tokens = []
             self.BIOTokens = []
-            self._text2bio(text)
+            self._text2bio(text, char_level)
             self.doc_name = doc_name
 
         elif type(text) == list:
@@ -44,6 +45,7 @@ class AnnotationSentence:
             self.end = end
             self.tokens = text
             self.doc_name = doc_name
+
 
     def update(self, tokens):
         if not self._check_tokens(tokens):
@@ -74,9 +76,9 @@ class AnnotationSentence:
             index = instance.end
         yield (((index, self.end), text[index:self.end], None))
 
-    def _text2bio(self, text):
+    def _text2bio(self, text, char_level=False):
         for segment in self._text2segments(text):
-            for token in _tokenise_segment(segment):
+            for token in _tokenise_segment(segment, self.char_level):
                 self.tokens.append(token)
                 self.BIOTokens.append([token[1], token[2]])
 
