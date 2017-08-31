@@ -23,15 +23,18 @@ from save_embeddings import read_embeddings_vocab, save_char_embeddings, save_wo
 word_embedding_size = 100 # word embedding size
 char_embedding_size = 100 # char embedding size
 kernels = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
-cnn_hidden_size = 100 # CNN output
+char_hidden_size = 200 # CNN output
 lstm_hidden_size = 300 # LSTM hidden size
 
 converge_check = 30
 use_chars = True
+char_embedding_method = "hcnn"
+#char_embedding_method = "lstm"
+#char_embedding_method = "vcnn"
 use_crf = True
-use_char_attention = False
+use_char_attention = True
 clip = 5
-batch_size = 20
+batch_size = 5
 num_epochs = 35
 dropout = 0.5
 learning_rate = 0.001
@@ -203,76 +206,109 @@ class Model(object):
 
                 char_embeddings = tf.reshape(char_embeddings, shape=[-1, s[-2], char_embedding_size])
 
-                """
-                word_lengths = tf.reshape(self.word_lengths, shape=[-1])
+                if char_embedding_method == "lstm":
+                    word_lengths = tf.reshape(self.word_lengths, shape=[-1])
 
-                # word level LSTM
-                cell_fw = tf.contrib.rnn.LSTMCell(self.config.char_hidden_size, 
-                                                    state_is_tuple=True)
-                cell_bw = tf.contrib.rnn.LSTMCell(self.config.char_hidden_size, 
-                                                    state_is_tuple=True)
+                    # word level LSTM
+                    cell_fw = tf.contrib.rnn.LSTMCell(char_hidden_size,
+                                                        state_is_tuple=True)
+                    cell_bw = tf.contrib.rnn.LSTMCell(char_hidden_size,
+                                                        state_is_tuple=True)
 
-                _, ((_, output_fw), (_, output_bw)) = tf.nn.bidirectional_dynamic_rnn(cell_fw, 
-                    cell_bw, char_embeddings, sequence_length=word_lengths, 
-                    dtype=tf.float32)
+                    _, ((_, output_fw), (_, output_bw)) = tf.nn.bidirectional_dynamic_rnn(cell_fw,
+                        cell_bw, char_embeddings, sequence_length=word_lengths,
+                        dtype=tf.float32)
 
-                output = tf.concat([output_fw, output_bw], axis=-1)
-                output = tf.Print(output, [tf.shape(output)], "output=", summarize=10)
+                    output = tf.concat([output_fw, output_bw], axis=-1)
+                    #output = tf.Print(output, [tf.shape(output)], "output=", summarize=10)
 
-                # shape = (batch size, max sentence length, char hidden size)
-                output = tf.reshape(output, shape=[-1, s[1], 2*self.config.char_hidden_size])
-                """
+                    # shape = (batch size, max sentence length, char hidden size)
+                    char_output = tf.reshape(output, shape=[-1, s[1], 2*char_hidden_size])
+                    self.char_hidden_total = char_hidden_size * 2
+                elif char_embedding_method == "hcnn":
+                    char_outputs = []
+                    # add channel
+                    char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
+                    for i, kernel_dim in enumerate(kernels):
+                        reduced_length = self.max_word_len - kernel_dim + 1
+                        with tf.name_scope("conv-maxpool-%s" % kernel_dim):
+                            # Convolution Layer
+                            filter_shape = [kernel_dim, char_embedding_size, 1, char_hidden_size]
+                            char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
+                            char_cnn_b = tf.Variable(tf.constant(0.1, shape=[char_hidden_size]), name="b")
+                            conv = tf.nn.conv2d(
+                                char_embeddings_with_channel,
+                                char_cnn_W,
+                                strides=[1, 1, 1, 1],
+                                padding="VALID",
+                                name="conv")
+                            # Apply nonlinearity
+                            h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
+                            # Maxpooling over the outputs, only on height
+                            pooled = tf.nn.max_pool(
+                                h,
+                                ksize=[1, reduced_length, 1, 1],
+                                strides=[1, 1, 1, 1],
+                                padding='VALID',
+                                name="pool")
+                            char_outputs.append(pooled)
 
-                char_cnn_outputs = []
-                # add channel
-                char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
-                for i, kernel_dim in enumerate(kernels):
-                    reduced_length = self.max_word_len - kernel_dim + 1
-                    with tf.name_scope("conv-maxpool-%s" % kernel_dim):
-                        # Convolution Layer
-                        filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
-                        char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
-                        char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
-                        conv = tf.nn.conv2d(
-                            char_embeddings_with_channel,
-                            char_cnn_W,
-                            strides=[1, 1, 1, 1],
-                            padding="VALID",
-                            name="conv")
-                        # Apply nonlinearity
-                        h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
-                        # Maxpooling over the outputs, only on height
-                        pooled = tf.nn.max_pool(
-                            h,
-                            ksize=[1, reduced_length, 1, 1],
-                            strides=[1, 1, 1, 1],
-                            padding='VALID',
-                            name="pool")
-                        char_cnn_outputs.append(pooled)
+                    # Combine all the pooled features
+                    self.char_hidden_total = char_hidden_size * len(kernels)
+                    char_hidden = tf.concat(char_outputs, 3)
+                    char_output = tf.reshape(char_hidden, [-1, s[1], self.char_hidden_total])
+                elif char_embedding_method == "vcnn":
+                    char_embeddings_with_channel = tf.expand_dims(char_embeddings, -1)
+                    char_input = char_embeddings_with_channel
+                    for i, kernel_dim in enumerate([2]):
+                        reduced_length = self.max_word_len - kernel_dim + 1
+                        with tf.name_scope("conv-maxpool-%s" % kernel_dim):
+                            # Convolution Layer
+                            if i == 0:
+                                filter_shape = [kernel_dim, char_embedding_size, 1, char_hidden_size]
+                            else:
+                                filter_shape = [kernel_dim, 1, char_hidden_size, char_hidden_size]
 
-                # Combine all the pooled features
-                cnn_hidden_total = cnn_hidden_size * len(kernels)
-                cnn_hidden = tf.concat(char_cnn_outputs, 3)
-                cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, s[1], cnn_hidden_total])
+                            char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
+                            char_cnn_b = tf.Variable(tf.constant(0.1, shape=[char_hidden_size]), name="b")
+                            conv = tf.nn.conv2d(
+                                char_input,
+                                char_cnn_W,
+                                strides=[1, 1, 1, 1],
+                                padding="VALID",
+                                name="conv")
+                            # Apply nonlinearity
+                            h = tf.nn.relu(tf.nn.bias_add(conv, char_cnn_b), name="relu")
+                            # Maxpooling over the outputs, only on height
+                            pooled = tf.nn.max_pool(
+                                h,
+                                ksize=[1, reduced_length, 1, 1],
+                                strides=[1, 1, 1, 1],
+                                padding='VALID',
+                                name="pool")
+                            char_input = pooled
+                    char_output = char_input
+                    char_output = tf.Print(char_output, [tf.shape(char_output)], "output=", summarize=10)
 
-
+                    # Combine all the pooled features
+                    self.char_hidden_total = char_hidden_size
+                    char_output = tf.reshape(char_output, [-1, s[1], self.char_hidden_total])
 
                 if use_char_attention: #use_char_attention:
 
                     # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
 
                     # Change h* to m via another feedforward network
-
-                    cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, cnn_hidden_total])
+                    char_output = tf.reshape(char_output, [-1, self.char_hidden_total])
                     word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
 
                     wm = tf.get_variable(
-                                    initializer=tf.random_normal([cnn_hidden_total, word_embedding_size], stddev=0.1),
+                                    initializer=tf.random_normal([self.char_hidden_total, word_embedding_size], stddev=0.1),
                                     name="charword_W", dtype=tf.float32)
                     bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
                                          name="charword_b", dtype=tf.float32)
 
-                    char_word = tf.matmul(cnn_hidden_flat, wm) + bm
+                    char_word = tf.matmul(char_output, wm) + bm
 
                     # Char Attention Here
                     with tf.variable_scope("chars_attention"):
@@ -292,8 +328,8 @@ class Model(object):
                         word_embeddings = tf.reshape(word_embeddings,
                                                      [-1, s[1], word_embedding_size])
                 else:
-                    word_embeddings = tf.concat([word_embeddings, cnn_hidden_flat], axis=-1)
-                    word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size + cnn_hidden_total])
+                    word_embeddings = tf.concat([word_embeddings, char_output], axis=-1)
+                    word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size + self.char_hidden_total])
         self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
@@ -377,9 +413,9 @@ class Model(object):
                 reduced_length = self.max_word_len - kernel_dim + 1
                 with tf.name_scope("conv-maxpool-%s" % i):
                     # Convolution Layer
-                    filter_shape = [kernel_dim, char_embedding_size, 1, cnn_hidden_size]
+                    filter_shape = [kernel_dim, char_embedding_size, 1, char_hidden_size]
                     char_cnn_W = tf.Variable(tf.truncated_normal(filter_shape, stddev=0.1), name="W")
-                    char_cnn_b = tf.Variable(tf.constant(0.1, shape=[cnn_hidden_size]), name="b")
+                    char_cnn_b = tf.Variable(tf.constant(0.1, shape=[char_hidden_size]), name="b")
                     conv = tf.nn.conv2d(
                         char_embeddings_with_channel,
                         char_cnn_W,
@@ -398,7 +434,7 @@ class Model(object):
                     layers.append(pooled)
 
             # Combine all the pooled features
-            cnn_hidden_total = cnn_hidden_size * len(kernels)
+            cnn_hidden_total = char_hidden_size * len(kernels)
             cnn_hidden = tf.concat(layers, 3)
             cnn_hidden_flat = tf.reshape(cnn_hidden, [-1, shape[1], cnn_hidden_total])
 
