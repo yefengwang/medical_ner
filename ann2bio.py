@@ -66,7 +66,7 @@ def print_bio_sequence(sequences, delimiter="\t", file=sys.stdout):
 
     for sentence in sequences:
         for i, [position, token, part_of_speech, tag] in enumerate(sentence.tokens):
-            print("%s" % (delimiter.join([token, str(position), part_of_speech, tag])), file=file)
+            print("%s" % (delimiter.join([token, "%s,%s" % position, part_of_speech, tag])), file=file)
 
         if sentence.tokens:
             print(file=file)
