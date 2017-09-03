@@ -12,8 +12,9 @@ from Tokeniser import tokeniser
 from AnnotationSentence import AnnotationSentence
 from Instance import Instance
 
+
 class BIODocument:
-    def __init__(self, docname, text, sentences=None):
+    def __init__(self, docname, text, sentences=None, char_level=False):
         if sentences:
             self.docname = docname
             self.text = text
@@ -21,15 +22,15 @@ class BIODocument:
         else:
             self.docname = docname
             self.text = text
-            self.sentences = self.__create_sentences(text)
+            self.sentences = self.__create_sentences(text, char_level)
         
-    def __create_sentences(self, doc_text):
-        SBD = SentenceBoundaryDetector()
+    def __create_sentences(self, doc_text, char_level):
+        sbd = SentenceBoundaryDetector()
         sentences = []
-        for i, (text, (start, end)) in enumerate(SBD.getSentences(doc_text)):
+        for i, (text, (start, end)) in enumerate(sbd.getSentences(doc_text)):
             if not text.strip():
                 continue
-            sentence = AnnotationSentence(self.docname, i, start, end, [], doc_text)
+            sentence = AnnotationSentence(self.docname, i, start, end, [], doc_text, char_level=char_level)
             sentences.append(sentence)
         return sentences
         

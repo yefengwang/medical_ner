@@ -37,25 +37,22 @@ def _get_instances_for_sentence(document, start, end, text):
     return instances
 
 
-def _construct_sentences(doc_name, document):
+def _construct_sentences(doc_name, document, char_level):
     sentences = []
     for i, (text, (start, end)) in enumerate(SBD.getSentences(document.text)):
         if not text.strip():
             continue
         instances = _get_instances_for_sentence(document, start, end, document.text)
-        sentence = AnnotationSentence(doc_name, i, start, end, instances, document.text)
+        sentence = AnnotationSentence(doc_name, i, start, end, instances, document.text, char_level)
         sentences.append(sentence)
     return sentences
 
 
-def convert_to_bio_sequence(document):
-    """converts an annotation document to bio sequences
-    :param document input document: 
-    :return a list of sequences: 
-    """
+def convert_to_bio_sequence(document, char_level):
+    """converts an annotation document to bio sequences"""
     doc_name = "" # I don't care about the document, will be added in later
-    sentences = _construct_sentences(doc_name, document)
-    bio_document = BIODocument(doc_name, document.text, sentences)
+    sentences = _construct_sentences(doc_name, document, char_level)
+    bio_document = BIODocument(doc_name, document.text, sentences, char_level)
     return bio_document.sentences
 
 

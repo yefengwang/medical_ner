@@ -1,5 +1,6 @@
 from Tokeniser import tokeniser
 
+
 def _tokenise_segment(segment, char_level):
     (start, end), text, tag_type = segment
 

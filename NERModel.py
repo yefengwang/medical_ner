@@ -18,29 +18,11 @@ from Vocab import Vocab
 from Vocab import NUM, PAD, OUTSIDE, UNK
 
 from save_embeddings import read_embeddings_vocab, save_char_embeddings, save_word_embeddings, load_embeddings
+from hyperparams import *
 
-# Hyper parameters
-word_embedding_size = 100 # word embedding size
-char_embedding_size = 100 # char embedding size
-kernels = [2, 3] # CNN filter sizes, use window 3, 4, 5 for char CNN
-char_hidden_size = 200 # CNN output
-lstm_hidden_size = 300 # LSTM hidden size
-
-converge_check = 30
-use_chars = True
-char_embedding_method = "hcnn"
-#char_embedding_method = "lstm"
-#char_embedding_method = "vcnn"
-use_crf = True
-use_char_attention = True
-clip = 5
-batch_size = 5
-num_epochs = 35
-dropout = 0.5
-learning_rate = 0.001
-learning_rate_decay = 0.9
 
 reload_model = False
+
 
 def get_vocabs(datasets):
     vocab_words = set()
@@ -53,22 +35,23 @@ def get_vocabs(datasets):
 
 
 class BIOFileLoader(object):
-    def __init__(self, filename, word_vocab=None, char_vocab=None, tag_vocab=None):
+    def __init__(self, filename, word_vocab=None, char_vocab=None, tag_vocab=None, char_level=False):
         self.filename = filename
-        #self.max_seq = max_seq
         self._length = None
         self._max_length = None
         self._max_word_length = None
         self.word_vocab = word_vocab
         self.char_vocab = char_vocab
         self.tag_vocab = tag_vocab
+        self.char_level = char_level
 
     def _initialize(self):
         length, max_length, max_word_length = 0, 0, 0
         for (xws, xcs), ys in self:
             length += 1
             max_length = max(len(xws), max_length)
-            max_word_length = max(max_word_length, max(map(len, xcs)))
+            #max_word_length = max(max_word_length, max(map(len, xcs)))
+            max_word_length = 1
             #print(max_length, max_word_length)
         self._max_length = max_length
         self._max_word_length = max_word_length
@@ -92,23 +75,35 @@ class BIOFileLoader(object):
             words, chars, tags = [], [], []
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("-DOCSTART-"):
+                if not line:
                     if words:
                         num_seq += 1
                         yield (words, chars), tags
                         words, chars, tags = [], [], []
                 else:
                     ls = line.split(' ')
-                    word, char, tag = ls[0], list(ls[0]), ls[-1]
-                    if self.word_vocab is not None:
-                        word = self.word_vocab.encode(word)
-                    if self.char_vocab is not None:
-                        char = self.char_vocab.encode(char)
-                    if self.tag_vocab is not None:
-                        tag = self.tag_vocab.encode(tag)
-                    words.append(word)
-                    chars.append(char)
-                    tags.append(tag)
+                    word, char, pos, tag = ls[0], list(ls[0]), ls[-2], ls[-1]
+                    if not self.char_level:
+                        if self.word_vocab is not None:
+                            word = self.word_vocab.encode(word)
+                        if self.char_vocab is not None:
+                            char = self.char_vocab.encode(char)
+                        if self.tag_vocab is not None:
+                            tag = self.tag_vocab.encode(tag)
+                        words.append(word)
+                        chars.append(char)
+                        tags.append(tag)
+                    else:
+                        char = word+"-" + str(pos)
+                        if self.word_vocab is not None:
+                            word = self.word_vocab.encode(word, self.char_level)
+                        if self.char_vocab is not None:
+                            char = self.char_vocab.encode(char, self.char_level)
+                        if self.tag_vocab is not None:
+                            tag = self.tag_vocab.encode(tag, self.char_level)
+                        words.append(word)
+                        chars.append(char)
+                        tags.append(tag)
 
     def __len__(self):
         if self._length is None:
@@ -461,6 +456,7 @@ class Model(object):
                 # num_instance = len(train)
                 train_loss = 0.0
                 for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
+                    print(words)
                     fd, _ = self.get_feed_dict(words, labels, self.learning_rate, dropout)
                     sys.stdout.write(".")
                     sys.stdout.flush()
@@ -598,16 +594,13 @@ class Model(object):
 
     def get_feed_dict(self, words, labels=None, lr=None, dropout=None):
         words, chars = zip(*words)
-        words, sentences_lengths = pad_sentence(words, 0)
-        #print(len(words[0]))
-        chars, word_lengths = pad_chars(chars, pad_tok=0,
-                                        max_word_length=self.max_word_len)
+        words, sentences_lengths = pad_sentence(chars, 0)
+        chars, sentences_lengths = pad_chars(chars, 0, 3)
 
         feed = {
             self.words: words,
             self.sentences_lengths: sentences_lengths,
-            self.chars: chars,
-            self.word_lengths: word_lengths
+            self.chars: chars
         }
 
         if labels is not None:
@@ -686,35 +679,39 @@ def pad_sequences(sequences, pad_tok, max_length):
         padded_seq = seq[:max_length] + [pad_tok] * max(max_length - len(seq), 0)
         padded_sequences.append(padded_seq)
         sequence_length += [min(len(seq), max_length)]
-
     return padded_sequences, sequence_length
 
 
 def pad_sentence(sentences, pad_tok, max_length=-1):
     if max_length == -1:
-        max_length = max(map(lambda x : len(x), sentences))
+        max_length = max(map(lambda x: len(x), sentences))
     padded_sentences, sentence_length = pad_sequences(sentences, pad_tok, max_length)
     return padded_sentences, sentence_length
 
 
-def pad_chars(sentences, pad_tok, max_word_length=-1, max_sentence_length=-1):
-    if max_word_length <= 0:
-        max_word_length = max([max(map(lambda x: len(x), seq)) for seq in sentences])
-    padded_words = []
-    word_length = []
-    for seq in sentences:
-        # all words are same length now
-        word, word_len = pad_sequences(seq, pad_tok, max_word_length)
-        padded_words.append(word)
-        word_length.append(word_len)
+def pad_chars(sentences, pad_tok, win_size=0, max_sentence_length=-1):
 
-    if max_sentence_length <= 0:
-        max_sentence_length = max(map(lambda x : len(x), sentences))
-    # pad the sentence with empty words of length max_word_length
-    padded_sentences, _ = pad_sequences(padded_words, [pad_tok]*max_word_length,
-                                        max_sentence_length)
-    # pad the word length array as well
-    sentence_length, _ = pad_sequences(word_length, 0, max_sentence_length)
+    sentences, sentence_length = pad_sentence(sentences, pad_tok, max_sentence_length)
+
+    def get(seq, i):
+        if i < 0 or i >= len(seq):
+            return 0
+        else:
+            return seq[i]
+
+    def get_context(seq, i):
+        context = []
+        for j in range(i - win_size, i + win_size + 1):
+            context += [get(seq, j)]
+        return context
+
+    padded_sentences = []
+    for seq in sentences:
+        padded_seq = []
+        for i in range(len(seq)):
+            padded_seq += [get_context(seq, i)]
+        padded_sentences.append(padded_seq)
+
 
     return padded_sentences, sentence_length
 
@@ -795,9 +792,12 @@ def run(input_dir):
                 invalid_transition = [tag_vocab.encode(label1), tag_vocab.encode(label2)]
                 invalid_transitions.append(invalid_transition)
 
-    train = BIOFileLoader(train_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
-    dev = BIOFileLoader(valid_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
-    test = BIOFileLoader(test_filename, word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab)
+    train = BIOFileLoader(train_filename,
+                          word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab, char_level=True)
+    dev = BIOFileLoader(valid_filename,
+                        word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab, char_level=True)
+    test = BIOFileLoader(test_filename,
+                         word_vocab=word_vocab, char_vocab=char_vocab, tag_vocab=tag_vocab, char_level=True)
 
     num_words = len(word_vocab)
     num_chars = len(char_vocab)
@@ -806,7 +806,7 @@ def run(input_dir):
     max_sentence_len = train.max_length()
     #max_sentence_len = 100
 
-    max_word_len = min(train.max_word_length(), 20)
+    #max_word_len = min(train.max_word_length(), 20)
 
     print("max_sentence={}".format(max_sentence_len))
     print("max_word={}".format(max_word_len))
@@ -832,7 +832,7 @@ def run(input_dir):
     model.test(test, vocab_tags, test_result_filename)
 
 def build(input_dir):
-    embeddings_dirname = "."
+    embeddings_dirname = "embeddings"
     working_dir = input_dir 
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
     word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
@@ -841,18 +841,17 @@ def build(input_dir):
     word_embeddings_npz_filename = os.path.join(working_dir, "word.npz")
     char_embeddings_npz_filename = os.path.join(working_dir, "char.npz")
 
-
     char_vocab = Vocab(encode_char=True)
     word_vocab = Vocab()
     label_vocab = Vocab(encode_tag=True)
 
-    train = BIOFileLoader(train_filename)
-    valid = BIOFileLoader(valid_filename)
-    test = BIOFileLoader(test_filename)
+    train = BIOFileLoader(train_filename, char_level=True)
+    valid = BIOFileLoader(valid_filename, char_level=True)
+    test = BIOFileLoader(test_filename, char_level=True)
 
-    char_vocab.encode_datasets([train, valid])
-    word_vocab.encode_datasets([train, valid])
-    label_vocab.encode_datasets([train, valid])
+    char_vocab.encode_datasets([train, valid], char_level=True)
+    word_vocab.encode_datasets([train, valid], char_level=True)
+    label_vocab.encode_datasets([train, valid], char_level=True)
 
     vocab = read_embeddings_vocab(word_embeddings_filename)
     word_vocab.update(vocab)

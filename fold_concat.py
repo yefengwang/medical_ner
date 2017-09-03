@@ -6,7 +6,6 @@ from collections import defaultdict
 
 def fold_concat(dirname, new_dirname):
     os.makedirs(new_dirname, exist_ok=True)
-    prf = defaultdict(lambda: {'tp': 0, 'ans': 0, 'act': 0, 'p': 0, 'r': 0, 'f': 0})
     files = [filename for filename in os.listdir(dirname) if filename.startswith("fold_")]
     files.sort()
     for fold_dir in files:
@@ -16,6 +15,7 @@ def fold_concat(dirname, new_dirname):
         new_filename = os.path.join(new_dirname, new_filename)
         print(test_result_filename, new_filename)
         shutil.copy(test_result_filename, new_filename)
+    shutil.copy("hyperparams.py", os.path.join(new_dirname, "hyperparams.py"))
 
 
 def fold_summary(dirname):

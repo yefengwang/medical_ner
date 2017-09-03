@@ -20,18 +20,21 @@ def strict_tokenise(text, char_level=False):
     @param text (str): a text string to be tokenised.
     @return (str):
     """
-    if char_level:
-        words = list(text)
-    else:
-        words = pseg.cut(text)
+    words = pseg.cut(text)
     offset = 0
     for token, flag in words:
+
         start = offset
         tkn_len = len(token)
         offset += tkn_len
         end = offset
-        yield(start, end, flag)
-		
+        if char_level:
+            for p, char in enumerate(list(token)):
+                yield (start + p, start + p + 1, str(p))
+        else:
+            yield (start, end, flag)
+
+
 class Tokeniser:
     
     def __init__(self):

@@ -8,21 +8,21 @@ from ehost2ann import read_project
 from ann2bio import convert_to_bio_sequence, print_bio_sequence
 
 
-def ehost_to_bio_sequence(project_name):
+def ehost_to_bio_sequence(project_name, char_level):
     bio_sequences = []
     for (doc_name, document) in read_project(project_name):
-        bio_sequence = convert_to_bio_sequence(document)
+        bio_sequence = convert_to_bio_sequence(document, char_level)
         bio_sequences.append((doc_name, bio_sequence))
     return bio_sequences
 
 
-def ehost2bio(project_name, filename, shuffle=False, delimiter='\t'):
-    sequences = ehost2seq(project_name, shuffle)
+def ehost2bio(project_name, filename, shuffle=False, delimiter='\t', char_level=False):
+    sequences = ehost2seq(project_name, shuffle, char_level)
     seq2bio(sequences, filename, delimiter)
 
 
-def ehost2seq(project_name, shuffle):
-    seqs = ehost_to_bio_sequence(project_name)
+def ehost2seq(project_name, shuffle, char_level):
+    seqs = ehost_to_bio_sequence(project_name, char_level)
     file_names, seqs_per_file = zip(*seqs)
     sequences = [seq for sub_seqs in seqs_per_file for seq in sub_seqs]
     if shuffle:
@@ -39,14 +39,14 @@ def seq2bio(bio_sequences, filename, delimiter):
 
 
 def ehost2bio_split(project_name, dirname, ratio, shuffle=False,
-                    delimiter=' ', train_file="train.txt", test_file="test.txt"):
-    sequences = ehost2seq(project_name, shuffle)
+                    delimiter=' ', train_file="train.txt", test_file="test.txt", char_level=False):
+    sequences = ehost2seq(project_name, shuffle, char_level=char_level)
     seq2bio_split(sequences, dirname, ratio, delimiter, train_file, test_file)
 
 
 def ehost2bio_create_fold(project_name, dirname, total_folds, shuffle=False, delimiter=' ',
-                          train_file="train.txt", valid_file="valid.txt", test_file="test.txt"):
-    sequences = ehost2seq(project_name, shuffle)
+                          train_file="train.txt", valid_file="valid.txt", test_file="test.txt", char_level=False):
+    sequences = ehost2seq(project_name, shuffle, char_level)
     for fold_num in range(total_folds):
         print("Creating fold %s ..." % fold_num)
         _ehost2bio_create_fold(sequences, dirname, fold_num, total_folds, delimiter,
@@ -81,8 +81,8 @@ def _ehost2bio_create_fold(sequences, dirname, fold_num, total_folds, delimiter=
 
 
 def ehost2bio_create(project_name, dirname, train_ratio, valid_ratio, shuffle=False, delimiter=' ',
-                     train_file="train.txt", valid_file="valid.txt", test_file="test.txt"):
-    sequences = ehost2seq(project_name, shuffle)
+                     train_file="train.txt", valid_file="valid.txt", test_file="test.txt", char_level=False):
+    sequences = ehost2seq(project_name, shuffle, char_level)
     total = len(sequences)
     num_train = int(train_ratio * total)
     num_valid = int(valid_ratio * total)
@@ -128,11 +128,17 @@ def main():
 
     parser.add_option('-c', '--create', action='store_true', dest='create',
                       help="create a training, validation and test set.")
+
+    parser.add_option('-z', '--zi', action='store_true', dest='char_level', help="use character level tagging")
     (options, args) = parser.parse_args()
 
     total_folds = 0
     mode = 'normal'
     train_ratio = 1.0
+    char_level = False
+    if options.char_level:
+        char_level = True
+
     if options.ratio is not None:
         try:
             train_ratio = float(options.ratio)
@@ -159,17 +165,17 @@ def main():
     project_name, output_filename = args[:2]
 
     if mode == 'normal':
-        ehost2bio(project_name, output_filename, options.shuffle, options.delimiter)
+        ehost2bio(project_name, output_filename, options.shuffle, options.delimiter, char_level=char_level)
     elif mode == 'fold':
         ehost2bio_create_fold(project_name, output_filename, total_folds, shuffle=options.shuffle, delimiter=' ',
-                                  train_file="train.txt", valid_file="valid.txt", test_file="test.txt")
+                                  train_file="train.txt", valid_file="valid.txt", test_file="test.txt", char_level=char_level)
     elif mode == 'split':
-        ehost2bio_split(project_name, output_filename, train_ratio, options.shuffle, options.delimiter)
+        ehost2bio_split(project_name, output_filename, train_ratio, options.shuffle, options.delimiter, char_level)
     elif mode == 'create':
         train_ratio = 0.7
         valid_ratio = 0.15
         ehost2bio_create(project_name, output_filename, train_ratio, valid_ratio,
-                         shuffle=options.shuffle, delimiter=options.delimiter)
+                         shuffle=options.shuffle, delimiter=options.delimiter, char_level=char_level)
 
 if __name__ == "__main__":
     main()

@@ -28,30 +28,44 @@ class Vocab:
     def __len__(self):
         return len(self.encoding_map)
 
-    def encodes(self, seq):
+    def encodes(self, seq, char_level=False):
         '''
         encode a sequence
         '''
-        return [self.encode(word) for word in seq]
+        return [self.encode(word, char_level) for word in seq]
 
-    def encode(self, word):
+    def encode(self, word, char_level=False):
         '''
         encode a word or a char
         '''
-        if self.encode_char:
-            return [self._encode(char, add=self._insert) for char in word]
+        if char_level:
+            if self.encode_char:
+                return self._encode(word, add=self._insert)
+            else:
+                return self._encode(word, add=self._insert)
         else:
-            return self._encode(word, add=self._insert)
+            if self.encode_char:
+                return [self._encode(char, add=self._insert) for char in word]
+            else:
+                return self._encode(word, add=self._insert)
 
-    def encode_datasets(self, datasets):
+    def encode_datasets(self, datasets, char_level=False):
         for dataset in datasets:
             for (xws, xcs), ys in dataset:
-                if self.encode_tag:
-                    self.encodes(ys)
-                elif self.encode_char:
-                    self.encodes(xcs)
+                if char_level:
+                    if self.encode_tag:
+                        self.encodes(ys)
+                    elif self.encode_char:
+                        self.encodes(xcs, char_level)
+                    else:
+                        self.encodes(xws)
                 else:
-                    self.encodes(xws)
+                    if self.encode_tag:
+                        self.encodes(ys)
+                    elif self.encode_char:
+                        self.encodes(xcs, char_level)
+                    else:
+                        self.encodes(xws)
 
     def decodes(self, idxs):
         return map(self.decode, idxs)
