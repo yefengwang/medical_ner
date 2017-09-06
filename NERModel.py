@@ -96,11 +96,9 @@ class BIOFileLoader(object):
                     else:
                         char = word+"-" + str(pos)
                         if self.word_vocab is not None:
-                            eword = self.word_vocab.encode(word, self.char_level)
-                            #print(eword)
-                            #if eword == 1440:
-                            #    print("w=", word)
-                            word = eword
+                            word = self.word_vocab.encode(word, self.char_level)
+                            #print(word, "->", eword)
+                            #word = eword
                         if self.char_vocab is not None:
                             char = self.char_vocab.encode(char, self.char_level)
                         if self.tag_vocab is not None:
@@ -145,6 +143,7 @@ class Model(object):
                  max_word_len, model_dir,
                  word_embeddings=None, char_embeddings=None,
                  load_model=False, invalid_transitions=[]):
+        print(num_chars, num_words)
         tf.reset_default_graph()
         self.num_words = num_words
         self.num_chars = num_chars
@@ -178,6 +177,7 @@ class Model(object):
         self.train_op = None
         self.loss = None
         with tf.variable_scope("words"):
+            #self.www = tf.Print(self.words, [self.words], "word=", summarize=2000)
             if word_embeddings is not None:
                 with tf.device('/cpu:0'):
                     word_embeddings_W = tf.Variable(word_embeddings, name="word_embedding_w", dtype=tf.float32, trainable=True)
@@ -292,8 +292,8 @@ class Model(object):
                     # Combine all the pooled features
                     self.char_hidden_total = char_hidden_size
                     char_output = tf.reshape(char_output, [-1, s[1], self.char_hidden_total])
-
-        self.word_embeddings = tf.nn.dropout(char_output, self.dropout)
+        self.word_embeddings = tf.concat([char_output, word_embeddings], -1)
+        self.word_embeddings = tf.nn.dropout(self.word_embeddings, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
             cell_fw = tf.contrib.rnn.LSTMCell(lstm_hidden_size)
@@ -424,7 +424,6 @@ class Model(object):
                 # num_instance = len(train)
                 train_loss = 0.0
                 for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
-                    #print(words[0])
                     fd, _ = self.get_feed_dict(words, labels, self.learning_rate, dropout)
                     sys.stdout.write(".")
                     sys.stdout.flush()
@@ -562,8 +561,9 @@ class Model(object):
 
     def get_feed_dict(self, words, labels=None, lr=None, dropout=None):
         words, chars = zip(*words)
-        words, sentences_lengths = pad_sentence(chars, 0)
-        chars, sentences_lengths = pad_chars(chars, 0, 3)
+        words, sentences_lengths = pad_sentence(words, 0)
+        #print("words=", words)
+        chars, sentences_lengths = pad_chars(chars, 0, context_window)
 
         feed = {
             self.words: words,
@@ -778,7 +778,7 @@ def run(input_dir):
     print("max_sentence={}".format(max_sentence_len))
     #print("max_word={}".format(max_word_len))
 
-    max_word_len = 7
+    max_word_len = 2 * context_window + 1
     word_embeddings_npz_filename = os.path.join(input_dir, "word.npz")
     char_embeddings_npz_filename = os.path.join(input_dir, "char.npz")
     word_embeddings = load_embeddings(word_embeddings_npz_filename)
