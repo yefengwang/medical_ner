@@ -96,7 +96,11 @@ class BIOFileLoader(object):
                     else:
                         char = word+"-" + str(pos)
                         if self.word_vocab is not None:
-                            word = self.word_vocab.encode(word, self.char_level)
+                            eword = self.word_vocab.encode(word, self.char_level)
+                            #print(eword)
+                            #if eword == 1440:
+                            #    print("w=", word)
+                            word = eword
                         if self.char_vocab is not None:
                             char = self.char_vocab.encode(char, self.char_level)
                         if self.tag_vocab is not None:
@@ -283,49 +287,13 @@ class Model(object):
                                 name="pool")
                             char_input = pooled
                     char_output = char_input
-                    char_output = tf.Print(char_output, [tf.shape(char_output)], "output=", summarize=10)
+                    # char_output = tf.Print(char_output, [tf.shape(char_output)], "output=", summarize=10)
 
                     # Combine all the pooled features
                     self.char_hidden_total = char_hidden_size
                     char_output = tf.reshape(char_output, [-1, s[1], self.char_hidden_total])
 
-                if use_char_attention: #use_char_attention:
-
-                    # see here: http://www.marekrei.com/blog/attending-to-characters-in-neural-sequence-labeling-models/
-
-                    # Change h* to m via another feedforward network
-                    char_output = tf.reshape(char_output, [-1, self.char_hidden_total])
-                    word_embeddings = tf.reshape(word_embeddings, [-1, word_embedding_size])
-
-                    wm = tf.get_variable(
-                                    initializer=tf.random_normal([self.char_hidden_total, word_embedding_size], stddev=0.1),
-                                    name="charword_W", dtype=tf.float32)
-                    bm = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size],
-                                         name="charword_b", dtype=tf.float32)
-
-                    char_word = tf.matmul(char_output, wm) + bm
-
-                    # Char Attention Here
-                    with tf.variable_scope("chars_attention"):
-                        # Attention mechanism
-                        attention_evidence_tensor = tf.concat([word_embeddings, char_word], axis=-1)
-
-                        w1 = tf.get_variable(initializer=tf.random_normal([word_embedding_size * 2, word_embedding_size], stddev=0.1),
-                                             name="attention_W1", dtype=tf.float32)
-                        b1 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b1", dtype=tf.float32)
-                        attention_output = tf.tanh(tf.matmul(attention_evidence_tensor, w1) + b1, name="attention_tanh")
-
-                        w2 = tf.get_variable(initializer=tf.random_normal([word_embedding_size, word_embedding_size], stddev=0.1),
-                                             name="attention_W2", dtype=tf.float32)
-                        b2 = tf.get_variable(initializer=tf.zeros_initializer(), shape=[word_embedding_size], name="attention_b2", dtype=tf.float32)
-                        attention_output = tf.sigmoid(tf.matmul(attention_output, w2) + b2, name="attention_sigmoid")
-                        word_embeddings = word_embeddings * attention_output + char_word * (1.0 - attention_output)
-                        word_embeddings = tf.reshape(word_embeddings,
-                                                     [-1, s[1], word_embedding_size])
-                else:
-                    word_embeddings = tf.concat([word_embeddings, char_output], axis=-1)
-                    word_embeddings = tf.reshape(word_embeddings, [-1, s[1], word_embedding_size + self.char_hidden_total])
-        self.word_embeddings = tf.nn.dropout(word_embeddings, self.dropout)
+        self.word_embeddings = tf.nn.dropout(char_output, self.dropout)
 
         with tf.variable_scope("bi-lstm"):
             cell_fw = tf.contrib.rnn.LSTMCell(lstm_hidden_size)
@@ -456,7 +424,7 @@ class Model(object):
                 # num_instance = len(train)
                 train_loss = 0.0
                 for i, (words, labels) in enumerate(mini_batch(train, batch_size)):
-                    print(words)
+                    #print(words[0])
                     fd, _ = self.get_feed_dict(words, labels, self.learning_rate, dropout)
                     sys.stdout.write(".")
                     sys.stdout.flush()
@@ -769,7 +737,6 @@ def run_fold(input_dir, fold_num):
     run(input_dir)
 
 
-
 def run(input_dir):
 
     model_dir = os.path.join(input_dir, "model")
@@ -809,8 +776,9 @@ def run(input_dir):
     #max_word_len = min(train.max_word_length(), 20)
 
     print("max_sentence={}".format(max_sentence_len))
-    print("max_word={}".format(max_word_len))
+    #print("max_word={}".format(max_word_len))
 
+    max_word_len = 7
     word_embeddings_npz_filename = os.path.join(input_dir, "word.npz")
     char_embeddings_npz_filename = os.path.join(input_dir, "char.npz")
     word_embeddings = load_embeddings(word_embeddings_npz_filename)

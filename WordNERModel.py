@@ -813,7 +813,7 @@ def run(input_dir):
     model.test(test, vocab_tags, test_result_filename)
 
 def build(input_dir):
-    embeddings_dirname = "."
+    embeddings_dirname = "embeddings"
     working_dir = input_dir 
     train_filename, valid_filename, test_filename = get_input_filenames(input_dir)
     word_vocab_filename, char_vocab_filename, label_vocab_filename = get_vocab_filenames(working_dir)
